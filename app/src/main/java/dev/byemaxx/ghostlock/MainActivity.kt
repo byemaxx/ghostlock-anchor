@@ -43,6 +43,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.anchor.bootstrap.ui.theme.AnchorTheme
@@ -149,8 +150,10 @@ private fun BootstrapScreen(
     var importPart by remember { mutableStateOf<AdbKeyPart?>(null) }
     var menuOpen by remember { mutableStateOf(false) }
     var showBasicInfo by remember { mutableStateOf(false) }
+    var showAbout by remember { mutableStateOf(false) }
     var showDetailedDiagnostics by remember { mutableStateOf(false) }
     var detailedDiagnostics by remember { mutableStateOf("") }
+    val uriHandler = LocalUriHandler.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         val part = importPart
         if (uri != null && part != null) onImport(part, uri)
@@ -177,6 +180,13 @@ private fun BootstrapScreen(
             Box {
                 TextButton(onClick = { menuOpen = true }) { Text("Menu") }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("About") },
+                        onClick = {
+                            menuOpen = false
+                            showAbout = true
+                        }
+                    )
                     DropdownMenuItem(
                         text = { Text("Status") },
                         onClick = {
@@ -259,6 +269,27 @@ private fun BootstrapScreen(
             text = { Text(basicInfo.displayText()) },
             confirmButton = {
                 TextButton(onClick = { showBasicInfo = false }) { Text("Close") }
+            }
+        )
+    }
+
+    if (showAbout) {
+        AlertDialog(
+            onDismissRequest = { showAbout = false },
+            title = { Text("About Anchor") },
+            text = {
+                Text(
+                    "Anchor is an Android application implementation for the" +
+                        "GhostLock OnePlus project.\n\nMaintained by byemaxx."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { uriHandler.openUri("https://github.com/byemaxx/ghostlock-anchor/") }) {
+                    Text("Project page")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAbout = false }) { Text("Close") }
             }
         )
     }
