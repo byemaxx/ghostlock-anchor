@@ -2,10 +2,6 @@
 
 Kernel exploit for OnePlus/OPPO/realme devices with locked bootloader. Achieves root + KernelSU installation without unlocking bootloader or modifying boot image. Runtime auto-detection of kernel version with multi-device offset table.
 
-<p align="center">
-  <img src="assets/screenshot.jpg" width="300" alt="GhostLock running on OnePlus Ace 6T with KernelSU (LKM, Jailbreak mode)">
-</p>
-
 ## Vulnerability
 
 **CVE-2026-43499** — Futex PI (Priority Inheritance) Use-After-Free
@@ -142,10 +138,10 @@ GhostLock only provides root. KernelSU installation depends on **ksud** — a bi
 
 ```bash
 adb tcpip 5555
-adb push ~/.android/adbkey /data/local/tmp/a/adbkey
-adb push ~/.android/adbkey.pub /data/local/tmp/a/adbkey.pub
 adb push ghostlock /data/local/tmp/a/e && chmod 755 /data/local/tmp/a/e
 ```
+
+When using Anchor, import the matching ADB key pair through the app. Do not copy ADB keys to `/data/local/tmp`.
 
 After first successful jailbreak, `persist.adb.tcp.port=5555` is set via `resetprop` — subsequent boots are fully automatic.
 

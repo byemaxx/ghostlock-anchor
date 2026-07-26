@@ -216,9 +216,9 @@ def main():
     results = compute_offsets(symbols, kimage_base)
 
     # Read current target.h for comparison
-    target_h = "C:/Users/Lxns/Downloads/ghostlock_ace6t_full (1)/exploit/src/targets/ace6t/target.h"
+    target_h = os.environ.get("TARGET_HEADER")
     current = {}
-    if os.path.exists(target_h):
+    if target_h and os.path.exists(target_h):
         with open(target_h, encoding='utf-8') as f:
             for line in f:
                 m = re.match(r'#define\s+(\w+_OFF)\s+(0x[0-9a-fA-F]+)', line)
