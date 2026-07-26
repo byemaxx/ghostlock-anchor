@@ -8,11 +8,11 @@ import java.io.FileOutputStream
 enum class AdbKeyPart { PRIVATE, PUBLIC }
 
 enum class AdbKeyStatus(val description: String) {
-    MISSING_BOTH("未配置 adbkey 与 adbkey.pub。请导入一对匹配的设备专属密钥。"),
-    MISSING_PRIVATE("仅存在 adbkey.pub；缺少与之匹配的私钥 adbkey。"),
-    MISSING_PUBLIC("仅存在 adbkey；缺少与之匹配的公钥 adbkey.pub。"),
-    READY("密钥对已就绪，保存在本 App 的 noBackup 私有目录。"),
-    INVALID("密钥文件格式无效，请重新导入一对匹配的 ADB key。"),
+    MISSING_BOTH("No adbkey or adbkey.pub configured. Import a matching device-specific key pair."),
+    MISSING_PRIVATE("adbkey.pub is present, but the matching adbkey private key is missing."),
+    MISSING_PUBLIC("adbkey is present, but the matching adbkey.pub public key is missing."),
+    READY("Key pair ready and stored in this app's private noBackup directory."),
+    INVALID("Invalid key file format. Re-import a matching ADB key pair."),
     ;
 
     val ready: Boolean get() = this == READY
@@ -39,16 +39,16 @@ class AdbKeyStore(private val context: Context) {
         temporary.delete()
         context.contentResolver.openInputStream(uri)?.use { input ->
             FileOutputStream(temporary).use { output -> input.copyTo(output) }
-        } ?: error("无法读取所选文件")
+        } ?: error("Unable to read the selected file")
 
         val valid = if (part == AdbKeyPart.PRIVATE) validPrivate(temporary) else validPublic(temporary)
         if (!valid) {
             temporary.delete()
-            error("所选文件不是有效的 ${if (part == AdbKeyPart.PRIVATE) "ADB 私钥" else "ADB 公钥"}")
+            error("The selected file is not a valid ${if (part == AdbKeyPart.PRIVATE) "ADB private key" else "ADB public key"}")
         }
 
-        if (destination.exists() && !destination.delete()) error("无法替换 ${destination.name}")
-        if (!temporary.renameTo(destination)) error("无法安装 ${destination.name}")
+        if (destination.exists() && !destination.delete()) error("Unable to replace ${destination.name}")
+        if (!temporary.renameTo(destination)) error("Unable to install ${destination.name}")
         destination.setReadable(true, true)
         destination.setWritable(part == AdbKeyPart.PRIVATE, true)
     }

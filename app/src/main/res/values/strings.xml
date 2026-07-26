@@ -1,5 +1,5 @@
 <resources>
     <string name="app_name">Anchor</string>
     <string name="bootstrap_channel">Anchor</string>
-    <string name="bootstrap_running">Bootstrap 正在运行</string>
+    <string name="bootstrap_running">Bootstrap running</string>
 </resources>

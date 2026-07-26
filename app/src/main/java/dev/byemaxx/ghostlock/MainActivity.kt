@@ -93,7 +93,7 @@ class MainActivity : ComponentActivity() {
 
     private fun startBootstrap() {
         if (!controller.isUsbDebuggingEnabled()) {
-            controller.appendDiagnostic("[!] USB 调试未开启，正在打开开发者选项。")
+            controller.appendDiagnostic("[!] USB debugging is disabled; opening Developer options.")
             startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
             refreshUi()
             return
@@ -175,10 +175,10 @@ private fun BootstrapScreen(
             Text("Anchor", style = MaterialTheme.typography.headlineMedium)
             Spacer(Modifier.weight(1f))
             Box {
-                TextButton(onClick = { menuOpen = true }) { Text("菜单") }
+                TextButton(onClick = { menuOpen = true }) { Text("Menu") }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     DropdownMenuItem(
-                        text = { Text("状态") },
+                        text = { Text("Status") },
                         onClick = {
                             menuOpen = false
                             showBasicInfo = true
@@ -186,7 +186,7 @@ private fun BootstrapScreen(
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text("导入 adbkey") },
+                        text = { Text("Import adbkey") },
                         onClick = {
                             menuOpen = false
                             importPart = AdbKeyPart.PRIVATE
@@ -194,7 +194,7 @@ private fun BootstrapScreen(
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text("导入 adbkey.pub") },
+                        text = { Text("Import adbkey.pub") },
                         onClick = {
                             menuOpen = false
                             importPart = AdbKeyPart.PUBLIC
@@ -208,7 +208,7 @@ private fun BootstrapScreen(
                                     checked = snapshot.autoDisableUsbDebugging,
                                     onCheckedChange = null
                                 )
-                                Text("结束后关闭 USB 调试")
+                                Text("Disable USB debugging after completion")
                             }
                         },
                         onClick = {
@@ -216,7 +216,7 @@ private fun BootstrapScreen(
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text("查看日志") },
+                        text = { Text("View logs") },
                         onClick = {
                             menuOpen = false
                             detailedDiagnostics = onShowDetailedDiagnostics()
@@ -224,7 +224,7 @@ private fun BootstrapScreen(
                         }
                     )
                     DropdownMenuItem(
-                        text = { Text("清理日志") },
+                        text = { Text("Clear logs") },
                         enabled = !snapshot.running,
                         onClick = {
                             menuOpen = false
@@ -240,13 +240,13 @@ private fun BootstrapScreen(
                 onClick = onRun,
                 enabled = snapshot.keyStatus.ready && !snapshot.running,
                 modifier = Modifier.weight(1f)
-            ) { Text(if (snapshot.stopping) "正在停止…" else if (snapshot.running) "Bootstrap 运行中…" else "开始 Bootstrap") }
+            ) { Text(if (snapshot.stopping) "Stopping…" else if (snapshot.running) "Bootstrap running…" else "Start Bootstrap") }
             Spacer(Modifier.width(8.dp))
             TextButton(
                 onClick = onStop,
                 enabled = snapshot.running && !snapshot.stopping,
                 modifier = Modifier.width(72.dp)
-            ) { Text("停止") }
+            ) { Text("Stop") }
         }
 
         LogPanel(snapshot.log, Modifier.weight(1f))
@@ -255,10 +255,10 @@ private fun BootstrapScreen(
     if (showBasicInfo) {
         AlertDialog(
             onDismissRequest = { showBasicInfo = false },
-            title = { Text("状态") },
+            title = { Text("Status") },
             text = { Text(basicInfo.displayText()) },
             confirmButton = {
-                TextButton(onClick = { showBasicInfo = false }) { Text("关闭") }
+                TextButton(onClick = { showBasicInfo = false }) { Text("Close") }
             }
         )
     }
@@ -266,11 +266,11 @@ private fun BootstrapScreen(
     if (showDetailedDiagnostics) {
         AlertDialog(
             onDismissRequest = { showDetailedDiagnostics = false },
-            title = { Text("日志（仅本机）") },
+            title = { Text("Logs") },
             text = {
                 SelectionContainer {
                     Text(
-                        detailedDiagnostics.ifBlank { "尚无日志记录。" },
+                        detailedDiagnostics.ifBlank { "No log entries yet." },
                         style = MaterialTheme.typography.bodySmall,
                         fontFamily = FontFamily.Monospace,
                         modifier = Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())
@@ -278,7 +278,7 @@ private fun BootstrapScreen(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showDetailedDiagnostics = false }) { Text("关闭") }
+                TextButton(onClick = { showDetailedDiagnostics = false }) { Text("Close") }
             }
         )
     }
@@ -292,7 +292,7 @@ private fun LogPanel(log: String, modifier: Modifier = Modifier) {
         Box(modifier = Modifier.fillMaxSize()) {
             SelectionContainer {
                 Text(
-                    text = log.ifBlank { "尚无启动结果。" },
+                    text = log.ifBlank { "No bootstrap result yet." },
                     style = MaterialTheme.typography.bodySmall,
                     fontFamily = FontFamily.Monospace,
                     modifier = Modifier

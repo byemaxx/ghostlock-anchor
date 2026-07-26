@@ -23,7 +23,7 @@ class BootstrapService : Service() {
         }
         if (intent?.action != ACTION_RUN || !running.compareAndSet(false, true)) return START_NOT_STICKY
         stopRequested.set(false)
-        updateStatus("Bootstrap 正在启动")
+        updateStatus("Starting Bootstrap")
         startForeground(NOTIFICATION_ID, notification(getString(R.string.bootstrap_running), true))
         Thread(::runBootstrap, "anchor-bootstrap").start()
         return START_NOT_STICKY
@@ -44,16 +44,16 @@ class BootstrapService : Service() {
         var process: Process? = null
         try {
             controller.clearLog()
-            controller.recordResult("启动中。")
+            controller.recordResult("Starting…")
             if (!keyStore.status().ready) {
-                updateStatus("缺少完整 ADB 密钥对")
-                controller.recordResult("启动失败：${keyStore.status().description}")
+                updateStatus("Missing ADB key pair")
+                controller.recordResult("Bootstrap failed: ${keyStore.status().description}")
                 return
             }
             val binary = File(applicationInfo.nativeLibraryDir, "libanchor.so")
-            check(binary.isFile) { "未找到 libanchor.so" }
+            check(binary.isFile) { "libanchor.so was not found" }
 
-            updateStatus("Anchor 正在运行")
+            updateStatus("Anchor is running")
             val startedProcess = ProcessBuilder(binary.absolutePath, "--bootstrap")
                 .redirectErrorStream(true)
                 .apply {
@@ -78,36 +78,36 @@ class BootstrapService : Service() {
                 startedProcess.destroyForcibly()
                 startedProcess.waitFor(5, TimeUnit.SECONDS)
                 outputThread.join(5_000)
-                controller.recordResult("启动超时，启动器已终止。")
-                updateStatus("Bootstrap 超时")
+                controller.recordResult("Timed out; the bootstrap process was terminated.")
+                updateStatus("Bootstrap timed out")
                 return
             }
             outputThread.join(5_000)
 
             if (stopRequested.get()) {
-                controller.recordResult("启动已由用户停止。")
-                updateStatus("Bootstrap 已停止")
+                controller.recordResult("Stopped by user.")
+                updateStatus("Bootstrap stopped")
                 return
             }
 
             if (startedProcess.exitValue() != 0) {
-                controller.recordResult("启动失败（退出码 ${startedProcess.exitValue()}），可直接重试。")
-                updateStatus("Bootstrap 失败")
+                controller.recordResult("Bootstrap failed (exit code ${startedProcess.exitValue()}). You can retry directly.")
+                updateStatus("Bootstrap failed")
                 return
             }
 
             if (waitForRoot()) {
-                controller.recordResult("启动完成：已检测到可用 su。")
-                updateStatus("Root 成功，已交给官方 ReSukiSU")
+                controller.recordResult("Bootstrap completed: usable su detected.")
+                updateStatus("Root succeeded; passed to official ReSukiSU")
                 openOfficialManager()
             } else {
-                controller.recordResult("启动结束，但未检测到可用 su。")
-                updateStatus("Bootstrap 未取得 su")
+                controller.recordResult("Bootstrap ended without detecting usable su.")
+                updateStatus("Bootstrap did not obtain su")
             }
         } catch (error: Exception) {
-            controller.appendDiagnostic("[!] Bootstrap 异常: ${error.message}")
-            controller.recordResult("启动异常，请清理日志后重试。")
-            updateStatus("Bootstrap 异常")
+            controller.appendDiagnostic("[!] Bootstrap error: ${error.message}")
+            controller.recordResult("Bootstrap error. Clear logs and retry.")
+            updateStatus("Bootstrap error")
         } finally {
             activeProcess.compareAndSet(process, null)
             stopRequested.set(false)
@@ -155,7 +155,7 @@ class BootstrapService : Service() {
         private val running = AtomicBoolean(false)
         private val stopRequested = AtomicBoolean(false)
         private val activeProcess = AtomicReference<Process?>(null)
-        @Volatile private var status = "尚未运行"
+        @Volatile private var status = "Not started"
 
         fun isRunning(): Boolean = running.get()
         fun isStopRequested(): Boolean = stopRequested.get()
@@ -170,16 +170,16 @@ class BootstrapService : Service() {
         /** Full diagnostics remain in app-private storage; expose only broad
          * lifecycle stages to the UI while a run is active. */
         private fun progressForDiagnostic(line: String): String? = when {
-            "Waiting for adb TCP" in line -> "正在等待本地 ADB 连接"
-            "adbd ready" in line -> "本地 ADB 已连接"
-            "Connecting via mini-adb" in line -> "正在建立本地连接"
-            "AUTH token" in line -> "正在验证 ADB 密钥"
-            "sending public key" in line -> "等待在设备上确认 ADB 授权"
-            "adb: connected" in line -> "ADB 授权完成，正在启动远端任务"
-            "exploit start" in line -> "远端任务已启动"
-            "Write 1" in line || "Write 2" in line -> "正在执行启动阶段"
-            "child is root" in line -> "正在完成启动"
-            "waiting for su" in line -> "正在等待权限服务"
+            "Waiting for adb TCP" in line -> "Waiting for local ADB connection"
+            "adbd ready" in line -> "Local ADB connected"
+            "Connecting via mini-adb" in line -> "Establishing local connection"
+            "AUTH token" in line -> "Verifying ADB key"
+            "sending public key" in line -> "Confirm ADB authorization on the device"
+            "adb: connected" in line -> "ADB authorized; starting remote task"
+            "exploit start" in line -> "Remote task started"
+            "Write 1" in line || "Write 2" in line -> "Running bootstrap stage"
+            "child is root" in line -> "Completing bootstrap"
+            "waiting for su" in line -> "Waiting for permission service"
             else -> null
         }
     }

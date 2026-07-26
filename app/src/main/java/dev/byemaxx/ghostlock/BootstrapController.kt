@@ -19,7 +19,7 @@ data class BootstrapSnapshot(
     val log: String,
 ) {
     companion object {
-        fun empty() = BootstrapSnapshot(AdbKeyStatus.MISSING_BOTH, false, false, false, "正在检查…", "")
+        fun empty() = BootstrapSnapshot(AdbKeyStatus.MISSING_BOTH, false, false, false, "Checking…", "")
     }
 }
 
@@ -33,16 +33,16 @@ data class BootstrapBasicInfo(
     val keyStatus: String,
 ) {
     fun displayText(): String = buildString {
-        appendLine("设备: $model / $device")
+        appendLine("Device: $model / $device")
         appendLine("Android: $androidVersion")
         appendLine("Kernel: $kernel")
-        appendLine("USB 调试: ${if (usbDebugging) "已开启" else "未开启"}")
+        appendLine("USB debugging: ${if (usbDebugging) "Enabled" else "Disabled"}")
         appendLine("TCP ADB: $tcpAdb")
         append("ADB key: $keyStatus")
     }
 
     companion object {
-        fun loading() = BootstrapBasicInfo("读取中", "", "", "", false, "读取中", "读取中")
+        fun loading() = BootstrapBasicInfo("Loading", "", "", "", false, "Loading", "Loading")
     }
 }
 
@@ -56,7 +56,7 @@ class BootstrapController(private val context: Context) {
         val status = BootstrapService.currentStatus()
         val log = if (running) {
             logStore.readRecentDiagnostics(MAX_LIVE_LOG_CHARS)
-                .ifBlank { "运行状态：$status" }
+                .ifBlank { "Status: $status" }
         } else if (includePreviousResult) {
             readLog()
         } else {
@@ -74,8 +74,8 @@ class BootstrapController(private val context: Context) {
 
     fun importKey(part: AdbKeyPart, uri: Uri) {
         keyStore.import(part, uri).fold(
-            onSuccess = { appendDiagnostic("[+] 已导入 ${if (part == AdbKeyPart.PRIVATE) "adbkey" else "adbkey.pub"}") },
-            onFailure = { appendDiagnostic("[!] 密钥导入失败: ${it.message}") }
+            onSuccess = { appendDiagnostic("[+] Imported ${if (part == AdbKeyPart.PRIVATE) "adbkey" else "adbkey.pub"}") },
+            onFailure = { appendDiagnostic("[!] Key import failed: ${it.message}") }
         )
     }
 
@@ -101,13 +101,13 @@ class BootstrapController(private val context: Context) {
     fun basicInfo(): BootstrapBasicInfo {
         val tcpAdb = runCatching {
             Socket().use { socket -> socket.connect(InetSocketAddress("127.0.0.1", 5555), 750) }
-            "5555 正在监听"
-        }.getOrElse { "5555 未监听" }
+            "Listening on 5555"
+        }.getOrElse { "Not listening on 5555" }
         return BootstrapBasicInfo(
             model = Build.MODEL,
             device = Build.DEVICE,
             androidVersion = Build.VERSION.RELEASE,
-            kernel = System.getProperty("os.version") ?: "未知",
+            kernel = System.getProperty("os.version") ?: "Unknown",
             usbDebugging = isUsbDebuggingEnabled(),
             tcpAdb = tcpAdb,
             keyStatus = keyStore.status().description,
