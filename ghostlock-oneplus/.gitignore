@@ -1,0 +1,36 @@
+# Native build products
+*.o
+*.a
+*.so
+*.exe
+ghostlock
+ace6t_exploit
+*.dSYM/
+
+# Local Android/NDK build state
+ndk_tmp/
+build/
+out/
+.cxx/
+.externalNativeBuild/
+.gradle/
+local.properties
+
+# IDE and editor state
+.idea/
+.vscode/
+*.iml
+
+# Local device images and extraction artifacts
+/boot.img
+/kernel
+/cph2655/*.img
+/cph2655/kernel_*
+/cph2655/kallsyms_*
+
+# Generated logs and temporary files
+*.log
+*.tmp
+*.bak
+
+__pycache__
