@@ -7,6 +7,12 @@ Anchor is an Android application implementation for the upstream [JoinChang/ghos
 | Device | Kernel | Status |
 | --- | --- | --- |
 | OnePlus 13 | `6.6.89-android15-8-g97a9aaefab9a-ab14519050-4k` | Successfully tested |
+| OnePlus 13 | `6.6.30-android15-8-g013ec21bba94-abogki383916444-4k` | Offset table included; device validation pending |
+
+## Version 1.1.2
+
+- Adds the OnePlus 13 `6.6.30-android15-8-g013ec21bba94-abogki383916444-4k` kernel offset table.
+- Shows the installed app version in **Menu → About**.
 
 ## Build
 

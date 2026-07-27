@@ -280,7 +280,9 @@ private fun BootstrapScreen(
             text = {
                 Text(
                     "Anchor is an Android application implementation for the" +
-                        "GhostLock OnePlus project.\n\nMaintained by byemaxx."
+                        "GhostLock OnePlus project.\n\n" +
+                        "Version ${BuildConfig.VERSION_NAME}\n\n" +
+                        "Maintained by byemaxx."
                 )
             },
             confirmButton = {
