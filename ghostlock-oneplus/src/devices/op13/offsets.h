@@ -1,7 +1,7 @@
 /* OnePlus 13 (IN2060 / CPH2655) — SM8750 / Snapdragon 8 Elite, kernel 6.6 */
 
 OFFSETS_ENTRY("6.6.89-android15-8-gf4dc45704e54-abogki446052083-4k",  /* IN2060_16.0.2.403 */
-  .off_init_task=0x0210E780, .off_init_cred=0x02120A48, .off_init_uts_ns=0x02292D10,
+  .kernel_phys_load=0xa8000000, STRUCT_OFFSETS_6_6, .pselect_shift=-2, .off_init_task=0x0210E780, .off_init_cred=0x02120A48, .off_init_uts_ns=0x02292D10,
   .off_empty_zero_page=0x022FE000, .off_root_task_group=0x02306580,
   .off_selinux_enforcing=0x023490E0, .off_kptr_restrict=0x0210C220,
   .off_selinux_blob_sizes=0x01665080, .off_security_hook_heads=0x01664948,
@@ -17,7 +17,23 @@ OFFSETS_ENTRY("6.6.89-android15-8-gf4dc45704e54-abogki446052083-4k",  /* IN2060_
   .off_slide_boot_id=0x0236A0D8,
 ),
 OFFSETS_ENTRY("6.6.89-android15-8-g97a9aaefab9a-ab14519050-4k",  /* CPH2655_16.0.8 (Global / OxygenOS) */
-  .off_init_task=0x020FE280, .off_init_cred=0x02110548, .off_init_uts_ns=0x02282190,
+  .kernel_phys_load=0xa8000000, STRUCT_OFFSETS_6_6, .pselect_shift=-2, .off_init_task=0x020FE280, .off_init_cred=0x02110548, .off_init_uts_ns=0x02282190,
+  .off_empty_zero_page=0x022ED000, .off_root_task_group=0x022F5580,
+  .off_selinux_enforcing=0x02336EA0, .off_kptr_restrict=0x020FBD20,
+  .off_selinux_blob_sizes=0x016626F0, .off_security_hook_heads=0x01661FB8,
+  .off_kmalloc_caches=0x01661AF8, .off_anon_pipe_buf_ops=0x0115BA88,
+  .off_ashmem_misc_fops=0x0225B3D8, .off_ashmem_fops=0x012DBE98,
+  .off_ashmem_ioctl=0x00C7F754, .off_ashmem_compat_ioctl=0x00C7FE10,
+  .off_ashmem_mmap=0x00C7FE64, .off_ashmem_open=0x00C80084,
+  .off_ashmem_release=0x00C8010C, .off_ashmem_show_fdinfo=0x00C80198,
+  .off_configfs_read_iter=0x0048C090, .off_configfs_bin_write_iter=0x0048C298,
+  .off_copy_splice_read=0x0041058C, .off_noop_llseek=0x003C332C,
+  .off_cap_capable_active=0,
+  .off_slide_nfulnl_logger=0x020F2258, .off_slide_loggers_0_1=0x020F21B0,
+  .off_slide_boot_id=0x02357E98,
+),
+OFFSETS_ENTRY("6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k",  /* New kernel for op13 */
+  .kernel_phys_load=0xa8000000, STRUCT_OFFSETS_6_6, .pselect_shift=-2, .off_init_task=0x020FE280, .off_init_cred=0x02110548, .off_init_uts_ns=0x02282190,
   .off_empty_zero_page=0x022ED000, .off_root_task_group=0x022F5580,
   .off_selinux_enforcing=0x02336EA0, .off_kptr_restrict=0x020FBD20,
   .off_selinux_blob_sizes=0x016626F0, .off_security_hook_heads=0x01661FB8,
