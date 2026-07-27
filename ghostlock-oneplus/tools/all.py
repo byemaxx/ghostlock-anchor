@@ -6,7 +6,7 @@ not contain a universally parseable kallsyms dump, so silently using a
 machine-specific file would produce unsafe offsets.
 
 Example:
-  python tools/all.py boot.img --kallsyms cph2655.kallsyms \
+  python tools/all.py boot.img \
       --output src/devices/op13/offsets.generated.h \
       --kernel-phys-load 0xa8000000 --struct-layout 6.6 --pselect-shift -2
 """
@@ -16,6 +16,8 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -50,11 +52,26 @@ TARGET_MAP = {
     "SLIDE_SYSCTL_BOOTID_OFF": ".off_slide_boot_id",
 }
 
+REQUIRED_TARGET_FIELDS = {
+    ".off_init_task", ".off_init_cred", ".off_init_uts_ns",
+    ".off_empty_zero_page", ".off_root_task_group",
+    ".off_selinux_enforcing", ".off_kptr_restrict",
+    ".off_selinux_blob_sizes", ".off_kmalloc_caches",
+    ".off_anon_pipe_buf_ops", ".off_ashmem_fops",
+    ".off_ashmem_ioctl", ".off_ashmem_compat_ioctl",
+    ".off_ashmem_mmap", ".off_ashmem_open", ".off_ashmem_release",
+    ".off_ashmem_show_fdinfo", ".off_configfs_read_iter",
+    ".off_configfs_bin_write_iter", ".off_copy_splice_read",
+    ".off_noop_llseek", ".off_slide_nfulnl_logger",
+    ".off_slide_loggers_0_1", ".off_slide_boot_id",
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("boot_img", type=Path)
-    parser.add_argument("--kallsyms", type=Path, required=True)
+    parser.add_argument("--kallsyms", type=Path,
+                        help="optional kallsyms/nm dump; auto-discovered beside boot.img")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--kernel", type=Path,
                         help="raw kernel; otherwise extract it from boot_img")
@@ -82,6 +99,87 @@ def kernel_release(kernel: bytes) -> str:
     if not match:
         raise RuntimeError("Linux version banner not found in kernel image")
     return match.group(1).decode("ascii", errors="strict")
+
+
+def discover_kallsyms(boot_img: Path, kernel_arg: Path | None,
+                      explicit: Path | None) -> Path | None:
+    if explicit:
+        candidate = explicit.resolve()
+        if not candidate.is_file():
+            raise RuntimeError(f"kallsyms file not found: {candidate}")
+        return candidate
+    candidates = [
+        boot_img.with_name(boot_img.stem + ".kallsyms.txt"),
+        boot_img.with_name("kallsyms.txt"),
+    ]
+    if kernel_arg:
+        kernel = kernel_arg.resolve()
+        candidates.extend([kernel.with_name(kernel.name + ".kallsyms.txt"),
+                           kernel.with_name("kallsyms.txt")])
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def find_nm() -> str | None:
+    for name in ("llvm-nm", "llvm-nm.exe", "nm", "nm.exe"):
+        found = shutil.which(name)
+        if found:
+            return found
+    ndk_root = os.environ.get("ANDROID_NDK_HOME") or os.environ.get("ANDROID_NDK_ROOT")
+    if ndk_root:
+        candidates = Path(ndk_root).glob("toolchains/llvm/prebuilt/*/bin/llvm-nm.exe")
+        for candidate in candidates:
+            if candidate.is_file():
+                return str(candidate)
+    sdk_ndk = Path.home() / "AppData" / "Local" / "Android" / "Sdk" / "ndk"
+    if sdk_ndk.is_dir():
+        for candidate in sdk_ndk.glob("*/toolchains/llvm/prebuilt/*/bin/llvm-nm.exe"):
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
+def find_decoder() -> str | None:
+    candidates = [shutil.which("vmlinux-to-elf"), shutil.which("vmlinux_to_elf"),
+                  str(Path(sys.executable).parent / "vmlinux-to-elf.exe"),
+                  str(Path(sys.executable).parent / "vmlinux-to-elf"),
+                  str(Path(sys.executable).parent / "Scripts" / "vmlinux-to-elf.exe"),
+                  str(Path(sys.executable).parent / "Scripts" / "vmlinux-to-elf")]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return candidate
+    return None
+
+
+def decode_kallsyms(kernel_path: Path, work_dir: Path) -> Path:
+    decoder = find_decoder()
+    nm = find_nm()
+    if not decoder:
+        raise RuntimeError(
+            "no kallsyms dump found and vmlinux-to-elf is unavailable; install "
+            "it with `python -m pip install vmlinux-to-elf` or place "
+            "<boot-stem>.kallsyms.txt beside boot.img")
+    if not nm:
+        raise RuntimeError("vmlinux-to-elf found, but llvm-nm/nm is unavailable")
+
+    elf_path = work_dir / "kernel.vmlinux.elf"
+    symbols_path = work_dir / "kernel.kallsyms.txt"
+    result = subprocess.run([decoder, str(kernel_path), str(elf_path)],
+                            check=False, capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
+    if result.returncode:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise RuntimeError(f"vmlinux-to-elf failed: {detail}")
+    nm_result = subprocess.run([nm, "-n", str(elf_path)], check=False,
+                               capture_output=True, text=True,
+                               encoding="utf-8", errors="replace")
+    if nm_result.returncode or not nm_result.stdout.strip():
+        detail = nm_result.stderr.strip() or "no symbols returned"
+        raise RuntimeError(f"nm failed: {detail}")
+    symbols_path.write_text(nm_result.stdout, encoding="utf-8", newline="\n")
+    return symbols_path
 
 
 def run_extract_target(kallsyms: Path) -> str:
@@ -116,34 +214,35 @@ def parse_offset_output(text: str, btf: bool = False) -> dict[str, str]:
 
 def generate(args: argparse.Namespace) -> None:
     boot_img = args.boot_img.resolve()
-    kallsyms = args.kallsyms.resolve()
     if not boot_img.is_file():
         raise RuntimeError(f"boot image not found: {boot_img}")
-    if not kallsyms.is_file():
-        raise RuntimeError(f"kallsyms file not found: {kallsyms}")
 
     kernel = args.kernel.resolve().read_bytes() if args.kernel else extract_kernel(boot_img)
     release = kernel_release(kernel)
 
-    with tempfile.NamedTemporaryFile(prefix="ghostlock-kernel-", suffix=".raw",
-                                     delete=False) as handle:
-        handle.write(kernel)
-        kernel_path = Path(handle.name)
-    try:
+    with tempfile.TemporaryDirectory(prefix="ghostlock-offsets-") as temp_dir:
+        temp_root = Path(temp_dir)
+        kernel_path = temp_root / "kernel.raw"
+        kernel_path.write_bytes(kernel)
+        kallsyms = discover_kallsyms(boot_img, args.kernel, args.kallsyms)
+        if not kallsyms:
+            kallsyms = decode_kallsyms(kernel_path, temp_root)
         target_text = run_extract_target(kallsyms)
-        import subprocess
         btf_cmd = [sys.executable, str(TOOLS_DIR / "extract_btf.py"), str(kernel_path)]
         btf_result = subprocess.run(btf_cmd, check=False, capture_output=True,
                                     text=True, encoding="utf-8", errors="replace")
         if btf_result.returncode:
             raise RuntimeError(btf_result.stderr.strip() or "extract_btf.py failed")
-    finally:
-        kernel_path.unlink(missing_ok=True)
 
     values = parse_offset_output(target_text)
     values.update(parse_offset_output(btf_result.stdout, btf=True))
     if not values:
         raise RuntimeError("no valid hexadecimal offsets were extracted")
+    missing = sorted(REQUIRED_TARGET_FIELDS - values.keys())
+    if missing:
+        raise RuntimeError(
+            "kallsyms extraction is incomplete; missing target offsets: "
+            + ", ".join(missing))
 
     lines = [f'/* Generated for {args.device}; verify before deployment. */',
              f'OFFSETS_ENTRY("{release}",  /* generated */']

@@ -103,7 +103,7 @@ def compute_offsets(symbols, kimage_base):
         results["SLIDE_LOGGERS_0_1_OFF"] = addr - kimage_base + 0x10
 
     # ashmem_fops (Rust mangled)
-    addr = find_symbol(symbols, "ASHMEM_FOPS_PTR")
+    addr = find_symbol(symbols, "ASHMEM_FOPS_PTR") or find_symbol(symbols, "ashmem_fops")
     if addr:
         results["ASHMEM_FOPS_OFF"] = addr - kimage_base
 
@@ -139,6 +139,22 @@ def compute_offsets(symbols, kimage_base):
             if func_frag in name and "ashmem_rust6Ashmem" in name and "toggle" not in name.lower():
                 results[define_name] = addr - kimage_base
                 break
+
+    # Android kernels that retain the classic ashmem implementation expose
+    # these unmangled symbols directly.
+    ashmem_plain_map = {
+        "ASHMEM_IOCTL_OFF": "ashmem_ioctl",
+        "ASHMEM_COMPAT_IOCTL_OFF": "compat_ashmem_ioctl",
+        "ASHMEM_MMAP_OFF": "ashmem_mmap",
+        "ASHMEM_OPEN_OFF": "ashmem_open",
+        "ASHMEM_RELEASE_OFF": "ashmem_release",
+        "ASHMEM_SHOW_FDINFO_OFF": "ashmem_show_fdinfo",
+    }
+    for define_name, sym_name in ashmem_plain_map.items():
+        if results.get(define_name) is None:
+            addr = find_symbol(symbols, sym_name)
+            if addr:
+                results[define_name] = addr - kimage_base
 
     # Old kernel uses different mangling: MiscdeviceVTable...6AshmemE5ioctl etc
     if "ASHMEM_IOCTL_OFF" not in results or results["ASHMEM_IOCTL_OFF"] is None:
