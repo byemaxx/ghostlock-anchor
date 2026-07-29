@@ -26,6 +26,7 @@ from pathlib import Path
 TOOLS_DIR = Path(__file__).resolve().parent
 RELEASE_RE = re.compile(rb"Linux version ([^\x00\s]+)")
 HEX_RE = re.compile(r"^0x[0-9a-fA-F]+$")
+OP13_KERNEL_PHYS_LOAD = 0xA8000000
 
 BTF_MAP = {
     "FAKE_TASK_PRIO_OFF": ".task_prio",
@@ -64,6 +65,7 @@ REQUIRED_TARGET_FIELDS = {
     ".off_configfs_bin_write_iter", ".off_copy_splice_read",
     ".off_noop_llseek", ".off_slide_nfulnl_logger",
     ".off_slide_loggers_0_1", ".off_slide_boot_id",
+    ".off_system_unbound_wq", ".off_call_usermodehelper_exec_work",
 }
 
 
@@ -80,6 +82,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pselect-shift", type=int)
     parser.add_argument("--device", default="generated")
     return parser.parse_args()
+
+
+def is_op13_output(args: argparse.Namespace) -> bool:
+    device = args.device.lower().replace("-", "").replace("_", "")
+    output = args.output.as_posix().lower()
+    return device in {"op13", "oneplus13", "cph2655", "in2060"} or "/op13/" in output
 
 
 def extract_kernel(boot_img: Path) -> bytes:
@@ -220,6 +228,14 @@ def generate(args: argparse.Namespace) -> None:
     kernel = args.kernel.resolve().read_bytes() if args.kernel else extract_kernel(boot_img)
     release = kernel_release(kernel)
 
+    kernel_phys_load = args.kernel_phys_load
+    if is_op13_output(args):
+        if kernel_phys_load is not None and kernel_phys_load != OP13_KERNEL_PHYS_LOAD:
+            raise RuntimeError(
+                "all OP13 entries must use kernel_phys_load=0xa8000000; "
+                f"received 0x{kernel_phys_load:X}")
+        kernel_phys_load = OP13_KERNEL_PHYS_LOAD
+
     with tempfile.TemporaryDirectory(prefix="ghostlock-offsets-") as temp_dir:
         temp_root = Path(temp_dir)
         kernel_path = temp_root / "kernel.raw"
@@ -246,8 +262,8 @@ def generate(args: argparse.Namespace) -> None:
 
     lines = [f'/* Generated for {args.device}; verify before deployment. */',
              f'OFFSETS_ENTRY("{release}",  /* generated */']
-    if args.kernel_phys_load is not None:
-        lines.append(f"  .kernel_phys_load=0x{args.kernel_phys_load:X},")
+    if kernel_phys_load is not None:
+        lines.append(f"  .kernel_phys_load=0x{kernel_phys_load:X},")
     if args.struct_layout:
         lines.append(f"  STRUCT_OFFSETS_{args.struct_layout.replace('.', '_')},")
     if args.pselect_shift is not None:

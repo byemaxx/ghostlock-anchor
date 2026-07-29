@@ -162,6 +162,8 @@ def main():
     # Load current target.h
     current = {}
     target_h = os.environ.get("TARGET_HEADER")
+    if not target_h:
+        target_h = os.path.join(os.path.dirname(__file__), "..", "src", "core", "target.h")
     if target_h and os.path.exists(target_h):
         with open(target_h, encoding='utf-8') as f:
             for line in f:

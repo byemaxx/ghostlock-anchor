@@ -135,16 +135,18 @@ static int load_adb_public_key(uint8_t *buf, size_t cap, uint32_t *len) {
   return 0;
 }
 
+int mini_adb_port = 5555;
+
 int mini_adb_shell(const char *shell_cmd) {
   int sock = socket(AF_INET, SOCK_STREAM, 0);
   if (sock < 0) { pr_error("socket: %s\n", strerror(errno)); return -1; }
 
   struct sockaddr_in addr = {
-    .sin_family = AF_INET, .sin_port = htons(5555),
+    .sin_family = AF_INET, .sin_port = htons(mini_adb_port),
     .sin_addr.s_addr = htonl(0x7f000001)
   };
   if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-    pr_error("connect 5555: %s\n", strerror(errno));
+    pr_error("connect %d: %s\n", mini_adb_port, strerror(errno));
     close(sock);
     return -1;
   }

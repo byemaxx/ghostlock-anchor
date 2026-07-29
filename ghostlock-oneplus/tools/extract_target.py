@@ -17,6 +17,11 @@ SYMBOLS_NEEDED = {
     "SLIDE_NFULNL_LOGGER_OFF": "nfulnl_logger",
     "SLIDE_RANDOM_BOOT_ID_DATA_OFF": "sysctl_bootid",
     "SLIDE_SYSCTL_BOOTID_OFF": "sysctl_bootid",
+    # UMH is mandatory for OnePlus 13's 6.6 kernels.  Keep these exact
+    # per-kernel symbol offsets in the generated table; never reuse another
+    # build's addresses.
+    "SYSTEM_UNBOUND_WQ_OFF": "system_unbound_wq",
+    "CALL_USERMODEHELPER_EXEC_WORK_OFF": "call_usermodehelper_exec_work",
 }
 
 FUNC_SYMBOLS = {
@@ -172,8 +177,9 @@ def compute_offsets(symbols, kimage_base):
                     results[define_name] = addr - kimage_base
                     break
 
-    # ASHMEM_MISC_FOPS — search for misc device registration struct
-    # It's typically near ashmem_fops. Search for "ashmem_misc" or "ashmem" misc pattern
+    # ASHMEM_MISC_FOPS — the symbol names the miscdevice object itself.
+    # miscdevice.fops is the fifth field on these C ashmem kernels, at +0x10.
+    # Rust ashmem devices have no predictable static miscdevice and remain 0.
     addr = find_symbol(symbols, "ashmem_misc")
     if not addr:
         # Try Rust mangled misc device name
@@ -182,7 +188,7 @@ def compute_offsets(symbols, kimage_base):
                 addr = a
                 break
     if addr:
-        results["ASHMEM_MISC_FOPS_OFF"] = addr - kimage_base
+        results["ASHMEM_MISC_FOPS_OFF"] = addr - kimage_base + 0x10
 
     # security_hook_heads — derive from security_hook_active symbols
     if "SECURITY_HOOK_HEADS_OFF" not in results or results.get("SECURITY_HOOK_HEADS_OFF") is None:
@@ -234,6 +240,8 @@ def main(argv=None):
 
     # Read current target.h for comparison
     target_h = args.target_header or os.environ.get("TARGET_HEADER")
+    if not target_h:
+        target_h = os.path.join(os.path.dirname(__file__), "..", "src", "core", "target.h")
     current = {}
     if target_h and os.path.exists(target_h):
         with open(target_h, encoding='utf-8') as f:

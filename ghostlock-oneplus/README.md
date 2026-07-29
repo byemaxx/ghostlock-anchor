@@ -18,6 +18,8 @@ The `pselect6` syscall copies `fd_set` data onto the kernel stack. When combined
 |--------|-----|--------|--------|
 | OnePlus Ace 6T (PLR110) | SM8845 | `6.12.38-android16-5-g8c67d4274c0a-ab14275539-4k` | **Working** |
 | OnePlus Ace 6T (PLR110) | SM8845 | `6.12.38-android16-5-g844001fb8721-ab14552068-4k` | **Working** |
+| OnePlus 15 (CPH2749) | SM8850 | `6.12.23-android16-5-ab14541642` | **Working** |
+| Xiaomi 17 (pudding) | SM8850 | `6.12.23-android16-5-abogki463945075` | **Working** |
 
 ### Offsets Extracted (pending device test)
 
@@ -120,7 +122,7 @@ $NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang \
   -O2 -Wall -Isrc/core -Isrc/devices -DTARGET_CONFIG_H="target.h" \
   src/core/main.c src/core/util.c src/core/slide.c \
   src/core/fops.c src/core/pipe.c src/core/root.c \
-  src/core/miniadb.c \
+  src/core/pipe_physrw.c src/core/umh_root.c src/core/miniadb.c \
   -o ghostlock -fPIE -pie -pthread
 ```
 
@@ -147,6 +149,9 @@ adb push ghostlock /data/local/tmp/a/e && chmod 755 /data/local/tmp/a/e
 When using Anchor, import the matching ADB key pair through the app. Do not copy ADB keys to `/data/local/tmp`.
 
 After first successful jailbreak, `persist.adb.tcp.port=5555` is set via `resetprop` — subsequent boots are fully automatic.
+
+For another TCP port, write it to `/data/local/tmp/a/adb_port`; the bootstrap helper
+reads that value and uses it for both the local connection and the remote handoff.
 
 ## Usage
 

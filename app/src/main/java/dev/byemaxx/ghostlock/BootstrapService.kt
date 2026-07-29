@@ -66,6 +66,7 @@ class BootstrapService : Service() {
                     environment()["ANCHOR_ADBKEY_PATH"] = keyStore.privateKey.absolutePath
                     environment()["ANCHOR_ADBKEY_PUB_PATH"] = keyStore.publicKey.absolutePath
                     environment()["ANCHOR_BOOTSTRAP_LOCK_DIR"] = bootstrapLockDir.absolutePath
+                    environment()["ANCHOR_FORCE_UMH"] = if (controller.forceUmh()) "1" else "0"
                 }
                 .start()
             process = startedProcess

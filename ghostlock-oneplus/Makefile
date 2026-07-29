@@ -10,9 +10,10 @@ SRCS := \
   src/core/util.c \
   src/core/slide.c \
   src/core/fops.c \
-  src/core/pipe.c \
+  src/core/pipe_physrw.c \
   src/core/root.c \
-  src/core/miniadb.c
+  src/core/miniadb.c \
+  src/core/umh_root.c
 
 CFLAGS := -O2 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function \
   -Isrc/core -Isrc/devices -DTARGET_CONFIG_H=\"target.h\"

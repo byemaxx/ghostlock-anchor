@@ -1,7 +1,7 @@
 /* OPPO Find X9 Ultra — SM8750 / Snapdragon 8 Elite, kernel 6.12 */
 
 OFFSETS_ENTRY("6.12.58-android16-6-g7704a1ae279b-ab15213644-4k",
-  .off_init_task=0x0252DAC0, .off_init_cred=0x02543830, .off_init_uts_ns=0x026B8C48,
+  STRUCT_OFFSETS_6_12, .off_init_task=0x0252DAC0, .off_init_cred=0x02543830, .off_init_uts_ns=0x026B8C48,
   .off_empty_zero_page=0x0275E000, .off_root_task_group=0x027668C0,
   .off_selinux_enforcing=0x027B5948, .off_kptr_restrict=0x0252C218,
   .off_selinux_blob_sizes=0x01934868, .off_security_hook_heads=0,

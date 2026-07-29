@@ -18,6 +18,12 @@ struct kernel_offsets {
   uint64_t off_copy_splice_read, off_noop_llseek, off_cap_capable_active;
   uint64_t off_slide_nfulnl_logger, off_slide_loggers_0_1, off_slide_boot_id;
 
+  /* UMH root: workqueue symbol offsets (0 = unavailable for this kernel). */
+  uint64_t off_system_unbound_wq;
+  uint64_t off_call_usermodehelper_exec_work;
+  /* Some device families must never fall back to the destructive W1/W2 paths. */
+  uint8_t requires_umh;
+
   /* Per-kernel task/mm layout.  Zero selects the compile-time fallback. */
   uint32_t task_prio, task_normal_prio, task_sched_task_group;
   uint32_t task_pi_lock, task_pi_waiters, task_pi_top_task, task_pi_blocked_on;
@@ -54,6 +60,7 @@ static const struct kernel_offsets known_offsets[] = {
 #include "op13/offsets.h"
 #include "op15/offsets.h"
 #include "findx9ultra/offsets.h"
+#include "pudding/offsets.h"
   { .uname_r = NULL }
 };
 

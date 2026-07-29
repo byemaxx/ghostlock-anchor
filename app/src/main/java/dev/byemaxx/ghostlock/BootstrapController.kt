@@ -15,11 +15,12 @@ data class BootstrapSnapshot(
     val running: Boolean,
     val stopping: Boolean,
     val autoDisableUsbDebugging: Boolean,
+    val forceUmh: Boolean,
     val status: String,
     val log: String,
 ) {
     companion object {
-        fun empty() = BootstrapSnapshot(AdbKeyStatus.MISSING_BOTH, false, false, false, "Checking…", "")
+        fun empty() = BootstrapSnapshot(AdbKeyStatus.MISSING_BOTH, false, false, false, false, "Checking…", "")
     }
 }
 
@@ -67,6 +68,7 @@ class BootstrapController(private val context: Context) {
             running = running,
             stopping = BootstrapService.isStopRequested(),
             autoDisableUsbDebugging = autoDisableUsbDebugging(),
+            forceUmh = forceUmh(),
             status = status,
             log = log
         )
@@ -94,9 +96,14 @@ class BootstrapController(private val context: Context) {
     }.getOrDefault(false)
 
     fun setAutoDisableUsbDebugging(enabled: Boolean) {
-        optionsFile.parentFile?.mkdirs()
-        optionsFile.writeText("disable_usb_debugging=${if (enabled) 1 else 0}\n")
+        writeOptions(autoDisableUsbDebugging = enabled, forceUmh = forceUmh())
     }
+
+    fun setForceUmh(enabled: Boolean) {
+        writeOptions(autoDisableUsbDebugging = autoDisableUsbDebugging(), forceUmh = enabled)
+    }
+
+    fun forceUmh(): Boolean = readOption("force_umh")
 
     fun basicInfo(): BootstrapBasicInfo {
         val tcpAdb = runCatching {
@@ -114,9 +121,19 @@ class BootstrapController(private val context: Context) {
         )
     }
 
-    private fun autoDisableUsbDebugging(): Boolean = runCatching {
-        optionsFile.readText().lineSequence().any { it.trim() == "disable_usb_debugging=1" }
+    private fun autoDisableUsbDebugging(): Boolean = readOption("disable_usb_debugging")
+
+    private fun readOption(name: String): Boolean = runCatching {
+        optionsFile.readText().lineSequence().any { it.trim() == "$name=1" }
     }.getOrDefault(false)
+
+    private fun writeOptions(autoDisableUsbDebugging: Boolean, forceUmh: Boolean) {
+        optionsFile.parentFile?.mkdirs()
+        optionsFile.writeText(
+            "disable_usb_debugging=${if (autoDisableUsbDebugging) 1 else 0}\n" +
+                "force_umh=${if (forceUmh) 1 else 0}\n"
+        )
+    }
 
     private fun completedRunLog(): String {
         val diagnostics = logStore.readCurrentDiagnostics().trimEnd()

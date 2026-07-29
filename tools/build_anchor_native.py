@@ -95,9 +95,10 @@ def main() -> int:
         "src/core/util.c",
         "src/core/slide.c",
         "src/core/fops.c",
-        "src/core/pipe.c",
+        "src/core/pipe_physrw.c",
         "src/core/root.c",
         "src/core/miniadb.c",
+        "src/core/umh_root.c",
     ]
     command = [
         str(compiler),

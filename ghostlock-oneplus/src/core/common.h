@@ -373,6 +373,7 @@ extern uint64_t p0_kernel_phys_load;
 extern uintptr_t g_init_cred_image;
 struct kernel_offsets;
 extern const struct kernel_offsets *active_offsets;
+extern int force_umh_mode;
 int env_flag(const char *name, int def);
 int env_int_range(const char *name, int def, int min, int max);
 long futex_op(
@@ -502,6 +503,8 @@ uint64_t pipe_read64(int fd, uintptr_t direct_addr);
 uint32_t pipe_read32(int fd, uintptr_t direct_addr);
 int pipe_write64(int fd, uintptr_t direct_addr, uint64_t value);
 int install_pipe_physrw(int fd);
+int install_umh_root(int fd);
+void handle_umh_mode(int argc, char **argv);
 void print_uname_line(const char *tag);
 int run_tmp_page_uname_stage(void);
 

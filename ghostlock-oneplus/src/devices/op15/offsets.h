@@ -1,7 +1,11 @@
-/* OnePlus 15 (PLK110) — SM8845 / Snapdragon 8s Elite */
+/* OnePlus 15 (PLK110 / CPH2745 / CPH2747 / CPH2749) — SM8850 / canoe
+ * (Snapdragon 8 Elite Gen 5). NOT SM8845; that is the Ace 6T / 15R.
+ * Symbol offsets verified 16/16 against a live CPH2749 running this exact
+ * kernel build, and against boot.img from CPH2745_16.0.9.400 (boot/init_boot
+ * are byte-identical across the regional SKUs). */
 
-OFFSETS_ENTRY("6.12.23-android16-5-gb2a876903b49-ab14541642-4k",  /* PLK110_16.0.8.301 (untested) */
-  .off_init_task=0x023ECF00, .off_init_cred=0x02402A68, .off_init_uts_ns=0x02574650,
+OFFSETS_ENTRY("6.12.23-android16-5-gb2a876903b49-ab14541642-4k",  /* verified working on CPH2749 16.0.9.400 */
+  .kernel_phys_load=0xc7800000, STRUCT_OFFSETS_6_12, .off_init_task=0x023ECF00, .off_init_cred=0x02402A68, .off_init_uts_ns=0x02574650,
   .off_empty_zero_page=0x02614000, .off_root_task_group=0x0261C580,
   .off_selinux_enforcing=0x026684F0, .off_kptr_restrict=0x023EB638,
   .off_selinux_blob_sizes=0x018304E8, .off_security_hook_heads=0,

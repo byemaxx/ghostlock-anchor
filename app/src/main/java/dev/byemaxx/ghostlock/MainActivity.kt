@@ -77,6 +77,7 @@ class MainActivity : ComponentActivity() {
                     onClearLog = ::clearLog,
                     onShowDetailedDiagnostics = controller::detailedDiagnostics,
                     onToggleAutoDisableUsbDebugging = ::setAutoDisableUsbDebugging,
+                    onToggleForceUmh = ::setForceUmh,
                     onShowBasicInfo = ::loadBasicInfo,
                     onImport = ::importKey
                 )
@@ -131,6 +132,11 @@ class MainActivity : ComponentActivity() {
         refreshUi()
     }
 
+    private fun setForceUmh(enabled: Boolean) {
+        controller.setForceUmh(enabled)
+        refreshUi()
+    }
+
     private fun loadBasicInfo() {
         basicInfo = BootstrapBasicInfo.loading()
         Thread {
@@ -150,6 +156,7 @@ private fun BootstrapScreen(
     onClearLog: () -> Unit,
     onShowDetailedDiagnostics: () -> String,
     onToggleAutoDisableUsbDebugging: (Boolean) -> Unit,
+    onToggleForceUmh: (Boolean) -> Unit,
     onShowBasicInfo: () -> Unit,
     onImport: (AdbKeyPart, Uri) -> Unit,
 ) {
@@ -229,6 +236,20 @@ private fun BootstrapScreen(
                         },
                         onClick = {
                             onToggleAutoDisableUsbDebugging(!snapshot.autoDisableUsbDebugging)
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(
+                                    checked = snapshot.forceUmh,
+                                    onCheckedChange = null
+                                )
+                                Text("Force UMH mode (no W1/W2 fallback)")
+                            }
+                        },
+                        onClick = {
+                            onToggleForceUmh(!snapshot.forceUmh)
                         }
                     )
                     DropdownMenuItem(
