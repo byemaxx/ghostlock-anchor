@@ -199,13 +199,26 @@ int mini_adb_shell(const char *shell_cmd) {
 
   pr_success("adb: connected\n");
 
-  char cmd_buf[512];
+  /* A_OPEN accepts an ADB payload up to the negotiated MAX_PAYLOAD. The
+   * bootstrap command includes cleanup and exit-status reporting, so it no
+   * longer fits the old arbitrary 512-byte local buffer. */
+  char cmd_buf[MAX_PAYLOAD];
   int cmd_len = snprintf(cmd_buf, sizeof(cmd_buf), "shell:%s", shell_cmd);
+  if (cmd_len < 0 || (size_t)cmd_len >= sizeof(cmd_buf)) {
+    pr_error("adb: shell command is too long\n");
+    close(sock);
+    return -1;
+  }
   uint32_t lid = 1;
   adb_send(sock, A_OPEN, lid, 0, cmd_buf, cmd_len + 1);
 
   uint32_t rid = 0;
   int remote_rc = -1;
+  static const char rc_marker[] = "__ANCHOR_RC=";
+  size_t marker_pos = 0;
+  char rc_text[12] = {0};
+  size_t rc_len = 0;
+  int reading_rc = 0;
   for (;;) {
     if (adb_recv(sock, &m, buf, MAX_PAYLOAD) < 0) break;
     if (m.command == A_OKAY) {
@@ -213,14 +226,41 @@ int mini_adb_shell(const char *shell_cmd) {
     } else if (m.command == A_WRTE) {
       buf[m.data_length] = 0;
       write(STDOUT_FILENO, buf, m.data_length);
-      char *result = strstr((char *)buf, "__ANCHOR_RC=");
-      if (result) remote_rc = (int)strtol(result + strlen("__ANCHOR_RC="), NULL, 10);
+      for (uint32_t i = 0; i < m.data_length; i++) {
+        unsigned char c = buf[i];
+        if (reading_rc) {
+          if (c >= '0' && c <= '9' && rc_len + 1 < sizeof(rc_text)) {
+            rc_text[rc_len++] = (char)c;
+          } else if (rc_len > 0) {
+            rc_text[rc_len] = '\0';
+            remote_rc = (int)strtol(rc_text, NULL, 10);
+            reading_rc = 0;
+            marker_pos = (c == (unsigned char)rc_marker[0]) ? 1 : 0;
+          } else {
+            reading_rc = 0;
+            marker_pos = (c == (unsigned char)rc_marker[0]) ? 1 : 0;
+          }
+        } else if (c == (unsigned char)rc_marker[marker_pos]) {
+          marker_pos++;
+          if (rc_marker[marker_pos] == '\0') {
+            reading_rc = 1;
+            rc_len = 0;
+            marker_pos = 0;
+          }
+        } else {
+          marker_pos = (c == (unsigned char)rc_marker[0]) ? 1 : 0;
+        }
+      }
       adb_send(sock, A_OKAY, lid, rid, NULL, 0);
     } else if (m.command == A_CLSE) {
       break;
     }
   }
 
+  if (reading_rc && rc_len > 0) {
+    rc_text[rc_len] = '\0';
+    remote_rc = (int)strtol(rc_text, NULL, 10);
+  }
   close(sock);
   return remote_rc == 0 ? 0 : 1;
 }

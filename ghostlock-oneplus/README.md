@@ -25,10 +25,10 @@ The `pselect6` syscall copies `fd_set` data onto the kernel stack. When combined
 |--------|-----|--------|-------|
 | OnePlus 15T (PLZ110) | SM8845 | `6.12.38-android16-5-g844001fb8721-ab14552068-4k` | Same kernel as Ace 6T; pending device test. |
 | OnePlus 15 (PLK110 / CPH274x) | SM8850 | `6.12.23-android16-5-gb2a876903b49-ab14541642-4k` | Offsets from OTA boot.img; pending device test. |
-| OnePlus 13 (IN2060) | SM8750 | `6.6.89-android15-8-gf4dc45704e54-abogki446052083-4k` | OP13 profile; `PSELECT_SHIFT=-2`, `PSELECT_ROUTE_DELAY_USEC=50000`. |
-| OnePlus 13 (CPH2655) | SM8750 | `6.6.89-android15-8-g97a9aaefab9a-ab14519050-4k` | OP13 profile; `PSELECT_SHIFT=-2`, `PSELECT_ROUTE_DELAY_USEC=50000`. |
-| OnePlus 13 | SM8750 | `6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k` | OP13 profile; `PSELECT_SHIFT=-2`, `PSELECT_ROUTE_DELAY_USEC=50000`. |
-| OnePlus 13 | SM8750 | `6.6.118-android15-8-g93e223c276e7-abogki500782043-4k` | OP13 profile; `PSELECT_SHIFT=-2`, `PSELECT_ROUTE_DELAY_USEC=50000`. |
+| OnePlus 13 (IN2060) | SM8750 | `6.6.89-android15-8-gf4dc45704e54-abogki446052083-4k` | OP13 profile; `PSELECT_SHIFT=-2`. |
+| OnePlus 13 (CPH2655) | SM8750 | `6.6.89-android15-8-g97a9aaefab9a-ab14519050-4k` | OP13 profile; `PSELECT_SHIFT=-2`. |
+| OnePlus 13 | SM8750 | `6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k` | OP13 profile; `PSELECT_SHIFT=-2`. |
+| OnePlus 13 | SM8750 | `6.6.118-android15-8-g93e223c276e7-abogki500782043-4k` | OP13 profile; `PSELECT_SHIFT=-2`. |
 
 ### Not Feasible (stack layout incompatible)
 

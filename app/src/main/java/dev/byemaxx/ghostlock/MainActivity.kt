@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -95,6 +96,11 @@ class MainActivity : ComponentActivity() {
     private fun startBootstrap() {
         if (!controller.isUsbDebuggingEnabled()) {
             controller.appendDiagnostic("[!] USB debugging is disabled; opening Developer options.")
+            Toast.makeText(
+                this,
+                "USB debugging is disabled. Enable it in Developer options.",
+                Toast.LENGTH_LONG
+            ).show()
             startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
             refreshUi()
             return
@@ -260,6 +266,13 @@ private fun BootstrapScreen(
         }
 
         LogPanel(snapshot.log, Modifier.weight(1f))
+
+        Text(
+            text = "Version ${BuildConfig.VERSION_NAME}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.align(Alignment.CenterHorizontally)
+        )
     }
 
     if (showBasicInfo) {

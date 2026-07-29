@@ -58,7 +58,7 @@ class BootstrapController(private val context: Context) {
             logStore.readRecentDiagnostics(MAX_LIVE_LOG_CHARS)
                 .ifBlank { "Status: $status" }
         } else if (includePreviousResult) {
-            readLog()
+            completedRunLog()
         } else {
             ""
         }
@@ -118,8 +118,12 @@ class BootstrapController(private val context: Context) {
         optionsFile.readText().lineSequence().any { it.trim() == "disable_usb_debugging=1" }
     }.getOrDefault(false)
 
-    private fun readLog(): String {
-        return logStore.readResult()
+    private fun completedRunLog(): String {
+        val diagnostics = logStore.readCurrentDiagnostics().trimEnd()
+        val result = logStore.readResult()
+        return listOf(diagnostics, result)
+            .filter { it.isNotBlank() }
+            .joinToString("\n\n")
     }
 
     private companion object {

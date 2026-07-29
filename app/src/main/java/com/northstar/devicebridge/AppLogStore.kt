@@ -4,7 +4,7 @@ import android.content.Context
 import java.io.File
 import java.io.FileOutputStream
 
-/** App-private diagnostic storage. The UI only exposes the compact result record. */
+/** App-private diagnostic storage for both the live and completed-run UI. */
 class AppLogStore(context: Context) {
     private val directory = File(context.noBackupFilesDir, "diagnostics")
     private val activeLog = File(directory, "bootstrap.log")

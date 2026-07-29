@@ -52,6 +52,10 @@ class BootstrapService : Service() {
             }
             val binary = File(applicationInfo.nativeLibraryDir, "libanchor.so")
             check(binary.isFile) { "libanchor.so was not found" }
+            val bootstrapLockDir = File(noBackupFilesDir, "bootstrap-lock")
+            check(bootstrapLockDir.isDirectory || bootstrapLockDir.mkdirs()) {
+                "Could not create the bootstrap lock directory"
+            }
 
             updateStatus("Anchor is running")
             val startedProcess = ProcessBuilder(binary.absolutePath, "--bootstrap")
@@ -61,6 +65,7 @@ class BootstrapService : Service() {
                     // PSELECT_ROUTE_DELAY_USEC is intentionally disabled for now.
                     environment()["ANCHOR_ADBKEY_PATH"] = keyStore.privateKey.absolutePath
                     environment()["ANCHOR_ADBKEY_PUB_PATH"] = keyStore.publicKey.absolutePath
+                    environment()["ANCHOR_BOOTSTRAP_LOCK_DIR"] = bootstrapLockDir.absolutePath
                 }
                 .start()
             process = startedProcess
