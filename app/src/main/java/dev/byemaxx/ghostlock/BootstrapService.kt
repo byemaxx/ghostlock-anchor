@@ -56,6 +56,8 @@ class BootstrapService : Service() {
             check(bootstrapLockDir.isDirectory || bootstrapLockDir.mkdirs()) {
                 "Could not create the bootstrap lock directory"
             }
+            // This private copy is only the unprivileged deployment source.
+            // The native root handoff atomically publishes it to /data/adb/anchor.
             val policyRepairScript = File(noBackupFilesDir, "repair_selinux_policy.sh")
             assets.open("repair_selinux_policy.sh").use { input ->
                 policyRepairScript.outputStream().use(input::copyTo)
@@ -75,7 +77,7 @@ class BootstrapService : Service() {
                     environment()["ANCHOR_BOOTSTRAP_LOCK_DIR"] = bootstrapLockDir.absolutePath
                     environment()["ANCHOR_FORCE_UMH"] = if (controller.forceUmh()) "1" else "0"
                     environment()["ANCHOR_LOAD_POLICY"] = if (controller.loadPolicy()) "1" else "0"
-                    environment()["ANCHOR_POLICY_REPAIR_SCRIPT"] = policyRepairScript.absolutePath
+                    environment()["ANCHOR_POLICY_REPAIR_SOURCE"] = policyRepairScript.absolutePath
                 }
                 .start()
             process = startedProcess

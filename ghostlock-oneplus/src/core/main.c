@@ -20,21 +20,28 @@
 const struct kernel_offsets *active_offsets = NULL;
 int force_umh_mode;
 static int load_policy_mode;
-static int run_policy_repair_via_su(void) {
-  const char *script_path = getenv("ANCHOR_POLICY_REPAIR_SCRIPT");
-  if (!script_path || !script_path[0] || strchr(script_path, '\'') != NULL ||
-      strchr(script_path, '"') != NULL) {
-    pr_error("policy repair script path is unavailable or unsafe\n");
-    return -1;
+#define BRIDGE_STATE_DIR "/data/adb/anchor"
+#define POLICY_REPAIR_PATH BRIDGE_STATE_DIR "/repair_selinux_policy.sh"
+#define POLICY_REPAIR_SOURCE_ENV "ANCHOR_POLICY_REPAIR_SOURCE"
+
+static int run_policy_repair_with_retries(const char *stage) {
+  for (int attempt = 1; attempt <= 5; ++attempt) {
+    char command[192];
+    int length = snprintf(command, sizeof(command),
+                          "su -c 'ANCHOR_POLICY_REPAIR_STAGE=%s %s'",
+                          stage, POLICY_REPAIR_PATH);
+    if (length < 0 || (size_t)length >= sizeof(command)) return -1;
+    pr_info("policy repair %s attempt %d/5\n", stage, attempt);
+    int rc = system(command);
+    if (rc == 0) {
+      pr_success("policy repair %s success\n", stage);
+      return 0;
+    }
+    pr_error("policy repair %s attempt %d/5 failed rc=%d\n", stage, attempt,
+             rc);
+    if (attempt != 5) sleep(1);
   }
-  char command[1024];
-  int command_length = snprintf(command, sizeof(command),
-                                "su -c 'sh \"%s\"'", script_path);
-  if (command_length < 0 || command_length >= (int)sizeof(command)) {
-    pr_error("policy repair command is too long\n");
-    return -1;
-  }
-  return system(command);
+  return -1;
 }
 
 /* Override target.h _OFF macros with dynamic offsets from offsets.h table */
@@ -375,16 +382,14 @@ static int run_w1_attempt(int attempt) {
 /* The bootstrapper keeps only a compact state record under its own root-owned
  * directory.  Temporary scripts and legacy shell-setup files must not survive
  * a completed or failed run in /data/local/tmp. */
-#define BRIDGE_STATE_DIR "/data/adb/anchor"
 #define ROOT_SCRIPT_PATH BRIDGE_STATE_DIR "/bootstrap.sh"
 #define UMH_SCRIPT_PATH "/data/local/tmp/.ghostlock_root.sh"
 #define LATELOAD_DIR "/data/adb/late-load.d"
 #define LATELOAD_RECOVERY_PATH LATELOAD_DIR "/99-anchor-recover.sh"
 #define BOOTSTRAP_LOCK_ENV "ANCHOR_BOOTSTRAP_LOCK_DIR"
 
-/* Anchor-specific one-shot late-load recovery is temporarily disabled while
- * isolating the OP13 reboot path.  Keep the implementation below intact so it
- * can be re-enabled without reconstructing the handoff logic. */
+/* A one-shot late-load recovery runs after KernelSU sepolicy initialization.
+ * It uses the same stable repair entry point as the immediate path. */
 #define ANCHOR_ENABLE_LATELOAD_RECOVERY 1
 
 static char bootstrap_lock_dir[512];
@@ -437,6 +442,23 @@ static void write_bridge_state(const char *value) {
   dprintf(fd, "result=%s\n", value);
   close(fd);
   chmod(BRIDGE_STATE_DIR "/bootstrap.state", 0600);
+}
+
+static void write_policy_repair_disabled_state(void) {
+  prepare_bridge_state_dir();
+  char tmp[160];
+  snprintf(tmp, sizeof(tmp), BRIDGE_STATE_DIR "/policy-repair.state.tmp.%ld",
+           (long)getpid());
+  int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  if (fd < 0) return;
+  dprintf(fd, "result=disabled\nstage=disabled\nselinux=unknown\n");
+  if (fsync(fd) == 0 && fchown(fd, 0, 0) == 0 && fchmod(fd, 0600) == 0 &&
+      close(fd) == 0)
+    rename(tmp, BRIDGE_STATE_DIR "/policy-repair.state");
+  else {
+    close(fd);
+    unlink(tmp);
+  }
 }
 
 static void cleanup_tmp_compat_files(void) {
@@ -588,6 +610,58 @@ static int publish_root_script(const char *path, const char *script) {
   return 1;
 }
 
+/* The app-private asset is only a first-deployment source.  After the
+ * credential transition, publish the stable root-owned copy atomically so a
+ * late-load process can never observe a partial script or depend on the app
+ * sandbox surviving userspace changes. */
+static int deploy_policy_repair_script(void) {
+  const char *source = getenv(POLICY_REPAIR_SOURCE_ENV);
+  if (!source || source[0] != '/') {
+    pr_error("policy repair deployment source is unavailable\n");
+    return 0;
+  }
+  int input = open(source, O_RDONLY | O_CLOEXEC);
+  if (input < 0) {
+    pr_error("cannot open policy repair deployment source errno=%d\n", errno);
+    return 0;
+  }
+  prepare_bridge_state_dir();
+  char tmp[160];
+  int length = snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", POLICY_REPAIR_PATH,
+                        (long)getpid());
+  if (length < 0 || (size_t)length >= sizeof(tmp)) { close(input); return 0; }
+  unlink(tmp);
+  int output = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0700);
+  if (output < 0) { close(input); return 0; }
+  char buffer[4096];
+  int ok = 1;
+  for (;;) {
+    ssize_t got = read(input, buffer, sizeof(buffer));
+    if (got == 0) break;
+    if (got < 0) { if (errno == EINTR) continue; ok = 0; break; }
+    for (ssize_t off = 0; off < got;) {
+      ssize_t put = write(output, buffer + off, (size_t)(got - off));
+      if (put > 0) { off += put; continue; }
+      if (put < 0 && errno == EINTR) continue;
+      ok = 0; break;
+    }
+    if (!ok) break;
+  }
+  close(input);
+  if (!ok || fsync(output) != 0 || fchown(output, 0, 0) != 0 ||
+      fchmod(output, 0700) != 0 || close(output) != 0 ||
+      rename(tmp, POLICY_REPAIR_PATH) != 0) {
+    close(output);
+    unlink(tmp);
+    pr_error("cannot publish policy repair script errno=%d\n", errno);
+    return 0;
+  }
+  chown(BRIDGE_STATE_DIR, 0, 0);
+  chmod(BRIDGE_STATE_DIR, 0700);
+  pr_success("policy repair script deployed\n");
+  return 1;
+}
+
 /* `late-load` deliberately changes the process environment and Magica may also
  * restart user space.  Do not put essential post-root work in the shell which
  * starts it: that shell can disappear mid-flight.  ksud runs every executable
@@ -616,6 +690,16 @@ static int write_lateload_recovery_script(void) {
     "if [ ! -f \"$KSUD\" ]; then KSUD=/data/adb/ksu/bin/ksud; fi\n"
     "if [ ! -f \"$KSUD\" ]; then KSUD=$(find /data/app -path '*/me.weishu.kernelsu*/lib/arm64/libksud.so' 2>/dev/null | head -n 1); fi\n"
     "if [ -f \"$KSUD\" ]; then chmod 755 \"$KSUD\" 2>/dev/null; fi\n"
+    "POLICY_REPAIR=/data/adb/anchor/repair_selinux_policy.sh\n"
+    "POLICY_RC=127\n"
+    "if grep -qx 'result=success' $STATE_DIR/policy-repair.state 2>/dev/null; then\n"
+    "  printf 'late-load policy repair skipped: immediate repair already succeeded\\n' >>$STATE_DIR/policy-repair.log\n"
+    "  POLICY_RC=0\n"
+    "elif [ -x \"$POLICY_REPAIR\" ]; then\n"
+    "  ANCHOR_POLICY_REPAIR_STAGE=late-load \"$POLICY_REPAIR\"\n"
+    "  POLICY_RC=$?\n"
+    "fi\n"
+    "if [ \"$POLICY_RC\" -eq 0 ]; then state late-load-policy-repaired \"$POLICY_RC\"; else state late-load-policy-repair-failed \"$POLICY_RC\"; fi\n"
     "APK=$(pm path com.resukisu.resukisu 2>/dev/null | sed -n 's/^package://p' | head -n 1)\n"
     "if [ -z \"$APK\" ]; then APK=$(pm path me.weishu.kernelsu 2>/dev/null | sed -n 's/^package://p' | head -n 1); fi\n"
     "MANAGER_LOG=$STATE_DIR/manager-selection.log\n"
@@ -631,8 +715,6 @@ static int write_lateload_recovery_script(void) {
     "  \"$KSUD\" resetprop -p persist.adb.tcp.port 5555 >/dev/null 2>&1\n"
     "  \"$KSUD\" resetprop service.adb.tcp.port 5555 >/dev/null 2>&1\n"
     "fi\n"
-    "POLICY_RC=127\n"
-    "# load_policy /sys/fs/selinux/policy  (temporarily disabled)\n"
     "OPTIONS=/data/user/0/com.anchor.bootstrap/no_backup/options.conf\n"
     "if grep -qx 'disable_usb_debugging=1' \"$OPTIONS\" 2>/dev/null; then\n"
     "  settings put global adb_enabled 0 >/dev/null 2>&1\n"
@@ -679,8 +761,7 @@ static int write_root_script_at(const char *script_path) {
     "    printf 'ksud=%s\\napk=%s\\n' \"$KSUD\" \"$APK\" >\"$MANAGER_LOG\"\n"
     "  fi\n"
     "  printf 'ksud=%s\\napk=%s\\nrc=%s\\n' \"$KSUD\" \"$APK\" \"$MANAGER_RC\" >>\"$MANAGER_LOG\"\n"
-    "  rm -f /data/adb/late-load.d/99-anchor-recover.sh\n"
-    "  state root-ready\n"
+    "  if grep -qx 'result=success' $STATE_DIR/policy-repair.state 2>/dev/null; then state root-ready-policy-repaired; elif grep -qx 'result=disabled' $STATE_DIR/policy-repair.state 2>/dev/null; then state root-ready-policy-repair-disabled; else state root-ready-policy-repair-pending; fi\n"
     "elif [ -x \"$KSUD\" ] || [ -f \"$KSUD\" ]; then\n"
     "  chmod 755 \"$KSUD\" 2>/dev/null\n"
     "  KVER=$(uname -r | cut -d. -f1-2)\n"
@@ -708,7 +789,7 @@ static int write_root_script_at(const char *script_path) {
     "      printf 'ksud=%s\\napk=%s\\n' \"$KSUD\" \"$APK\" >\"$MANAGER_LOG\"\n"
     "    fi\n"
     "    printf 'ksud=%s\\napk=%s\\nrc=%s\\n' \"$KSUD\" \"$APK\" \"$MANAGER_RC\" >>\"$MANAGER_LOG\"\n"
-    "    grep -qx 'result=late-load-complete' \"$STATE\" 2>/dev/null && state root-ready || state root-ready-late-load-pending\n"
+    "    if grep -qx 'result=success' $STATE_DIR/policy-repair.state 2>/dev/null; then state root-ready-policy-repaired; elif grep -qx 'result=disabled' $STATE_DIR/policy-repair.state 2>/dev/null; then state root-ready-policy-repair-disabled; elif grep -qx 'result=late-load-complete' \"$STATE\" 2>/dev/null; then state root-ready-policy-repair-failed; else state root-ready-policy-repair-pending; fi\n"
     "  else state root-unavailable; fi\n"
     "else\n"
     "  state root-unavailable\n"
@@ -858,12 +939,20 @@ static void child_main(struct child_pipes *p) {
   /* /data/adb is inaccessible to the shell process.  Create both the
    * root-owned state directory and its short-lived handoff script only after
    * the credential transition has completed. */
+  if (load_policy_mode && !deploy_policy_repair_script()) {
+    write_bridge_state("root-ready-policy-repair-pending");
+    _exit(1);
+  }
+  if (!load_policy_mode) {
+    write_policy_repair_disabled_state();
+    write_bridge_state("root-ready-policy-repair-disabled");
+  }
   if (!write_root_script() || access(ROOT_SCRIPT_PATH, X_OK) != 0) {
     write_bridge_state("root-script-unavailable");
     _exit(1);
   }
 #if ANCHOR_ENABLE_LATELOAD_RECOVERY
-  if (!write_lateload_recovery_script()) {
+  if (load_policy_mode && !write_lateload_recovery_script()) {
     write_bridge_state("late-load-script-unavailable");
     _exit(1);
   }
@@ -989,11 +1078,11 @@ int run_exploit(int argc, char **argv) {
       if (system("su -c 'id' > /dev/null 2>&1") == 0) {
         pr_success("su ready\n");
         if (load_policy_mode) {
-          int policy_rc = run_policy_repair_via_su();
+          int policy_rc = run_policy_repair_with_retries("immediate");
           if (policy_rc == 0)
             pr_success("immediate repaired policy load done\n");
           else
-            pr_error("immediate repaired policy load failed rc=%d\n", policy_rc);
+            pr_error("immediate repaired policy load failed; late-load recovery remains armed\n");
         } else {
           pr_info("load_policy disabled by user option\n");
         }
@@ -1078,12 +1167,11 @@ int run_exploit(int argc, char **argv) {
     if (system("su -c 'id' > /dev/null 2>&1") == 0) {
       pr_success("su ready\n");
       if (load_policy_mode) {
-        int policy_rc = run_policy_repair_via_su();
+        int policy_rc = run_policy_repair_with_retries("immediate");
         if (policy_rc == 0)
           pr_success("immediate repaired policy load done\n");
         else
-          pr_error("immediate repaired policy load failed rc=%d; late-load recovery remains armed\n",
-                   policy_rc);
+          pr_error("immediate repaired policy load failed; late-load recovery remains armed\n");
       } else {
         pr_info("load_policy disabled by user option\n");
       }
@@ -1155,15 +1243,15 @@ tcp_ready:
   * that directory, so derive the packaged library path from `pm path`. */
   const char *force_arg = env_flag("ANCHOR_FORCE_UMH", 0) ? " --force-umh" : "";
   const char *load_policy_arg = env_flag("ANCHOR_LOAD_POLICY", 0) ? " --load-policy" : "";
-  const char *policy_script = getenv("ANCHOR_POLICY_REPAIR_SCRIPT");
+  const char *policy_script = getenv(POLICY_REPAIR_SOURCE_ENV);
   char policy_script_env[PATH_MAX + 64] = "";
   if (load_policy_arg[0]) {
     if (!policy_script || !policy_script[0] || strchr(policy_script, '\'') ||
         strchr(policy_script, '"') || strchr(policy_script, '\n')) {
-      pr_error("policy repair script path is unavailable; repair will fail\n");
+      pr_error("policy repair deployment source is unavailable; repair will fail\n");
     } else {
       snprintf(policy_script_env, sizeof(policy_script_env),
-               "ANCHOR_POLICY_REPAIR_SCRIPT='%s' ", policy_script);
+               POLICY_REPAIR_SOURCE_ENV "='%s' ", policy_script);
     }
   }
   char remote_cmd[PATH_MAX + 2304];
