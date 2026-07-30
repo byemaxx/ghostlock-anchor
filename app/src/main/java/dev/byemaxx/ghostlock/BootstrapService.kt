@@ -56,6 +56,13 @@ class BootstrapService : Service() {
             check(bootstrapLockDir.isDirectory || bootstrapLockDir.mkdirs()) {
                 "Could not create the bootstrap lock directory"
             }
+            val policyRepairScript = File(noBackupFilesDir, "repair_selinux_policy.sh")
+            assets.open("repair_selinux_policy.sh").use { input ->
+                policyRepairScript.outputStream().use(input::copyTo)
+            }
+            check(policyRepairScript.setReadable(true, true)) {
+                "Could not make the policy repair script readable"
+            }
 
             updateStatus("Anchor is running")
             val startedProcess = ProcessBuilder(binary.absolutePath, "--bootstrap")
@@ -68,6 +75,7 @@ class BootstrapService : Service() {
                     environment()["ANCHOR_BOOTSTRAP_LOCK_DIR"] = bootstrapLockDir.absolutePath
                     environment()["ANCHOR_FORCE_UMH"] = if (controller.forceUmh()) "1" else "0"
                     environment()["ANCHOR_LOAD_POLICY"] = if (controller.loadPolicy()) "1" else "0"
+                    environment()["ANCHOR_POLICY_REPAIR_SCRIPT"] = policyRepairScript.absolutePath
                 }
                 .start()
             process = startedProcess

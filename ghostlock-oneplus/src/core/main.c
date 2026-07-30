@@ -15,10 +15,27 @@
 #include <arpa/inet.h>
 #include <sys/utsname.h>
 #include <poll.h>
+#include <limits.h>
 
 const struct kernel_offsets *active_offsets = NULL;
 int force_umh_mode;
 static int load_policy_mode;
+static int run_policy_repair_via_su(void) {
+  const char *script_path = getenv("ANCHOR_POLICY_REPAIR_SCRIPT");
+  if (!script_path || !script_path[0] || strchr(script_path, '\'') != NULL ||
+      strchr(script_path, '"') != NULL) {
+    pr_error("policy repair script path is unavailable or unsafe\n");
+    return -1;
+  }
+  char command[1024];
+  int command_length = snprintf(command, sizeof(command),
+                                "su -c 'sh \"%s\"'", script_path);
+  if (command_length < 0 || command_length >= (int)sizeof(command)) {
+    pr_error("policy repair command is too long\n");
+    return -1;
+  }
+  return system(command);
+}
 
 /* Override target.h _OFF macros with dynamic offsets from offsets.h table */
 #undef SELINUX_ENFORCING_OFF
@@ -972,7 +989,11 @@ int run_exploit(int argc, char **argv) {
       if (system("su -c 'id' > /dev/null 2>&1") == 0) {
         pr_success("su ready\n");
         if (load_policy_mode) {
-          system("su -c 'load_policy /sys/fs/selinux/policy' > /dev/null 2>&1");
+          int policy_rc = run_policy_repair_via_su();
+          if (policy_rc == 0)
+            pr_success("immediate repaired policy load done\n");
+          else
+            pr_error("immediate repaired policy load failed rc=%d\n", policy_rc);
         } else {
           pr_info("load_policy disabled by user option\n");
         }
@@ -1057,11 +1078,11 @@ int run_exploit(int argc, char **argv) {
     if (system("su -c 'id' > /dev/null 2>&1") == 0) {
       pr_success("su ready\n");
       if (load_policy_mode) {
-        int policy_rc = system("su -c 'load_policy /sys/fs/selinux/policy' > /dev/null 2>&1");
+        int policy_rc = run_policy_repair_via_su();
         if (policy_rc == 0)
-          pr_success("immediate load_policy done\n");
+          pr_success("immediate repaired policy load done\n");
         else
-          pr_error("immediate load_policy failed rc=%d; late-load recovery remains armed\n",
+          pr_error("immediate repaired policy load failed rc=%d; late-load recovery remains armed\n",
                    policy_rc);
       } else {
         pr_info("load_policy disabled by user option\n");
@@ -1134,7 +1155,18 @@ tcp_ready:
   * that directory, so derive the packaged library path from `pm path`. */
   const char *force_arg = env_flag("ANCHOR_FORCE_UMH", 0) ? " --force-umh" : "";
   const char *load_policy_arg = env_flag("ANCHOR_LOAD_POLICY", 0) ? " --load-policy" : "";
-  char remote_cmd[2048];
+  const char *policy_script = getenv("ANCHOR_POLICY_REPAIR_SCRIPT");
+  char policy_script_env[PATH_MAX + 64] = "";
+  if (load_policy_arg[0]) {
+    if (!policy_script || !policy_script[0] || strchr(policy_script, '\'') ||
+        strchr(policy_script, '"') || strchr(policy_script, '\n')) {
+      pr_error("policy repair script path is unavailable; repair will fail\n");
+    } else {
+      snprintf(policy_script_env, sizeof(policy_script_env),
+               "ANCHOR_POLICY_REPAIR_SCRIPT='%s' ", policy_script);
+    }
+  }
+  char remote_cmd[PATH_MAX + 2304];
   snprintf(remote_cmd, sizeof(remote_cmd),
     "rm -f /data/local/tmp/.ghostlock_root.sh /data/local/tmp/.ghostlock_w1 "
     "/data/local/tmp/a/ghostlock_postroot.log /data/local/tmp/a/adbkey "
@@ -1142,10 +1174,10 @@ tcp_ready:
     "APK=$(pm path " ANCHOR_BOOTSTRAP_PACKAGE " 2>/dev/null | sed -n 's/^package://p' | head -n 1); "
     "if [ -z \"$APK\" ]; then RC=127; STAGE=apk-not-found; "
     "else APPBIN=${APK%%/base.apk}/lib/arm64/libanchor.so; "
-    "if [ -x \"$APPBIN\" ]; then \"$APPBIN\"%s%s; RC=$?; STAGE=anchor-exited; "
+    "if [ -x \"$APPBIN\" ]; then %s\"$APPBIN\"%s%s; RC=$?; STAGE=anchor-exited; "
     "else RC=126; STAGE=appbin-not-executable; fi; fi; "
     "printf '\\n__ANCHOR_STAGE=%%s\\n__ANCHOR_RC=%%s\\n' \"$STAGE\" \"$RC\"; exit \"$RC\"",
-    force_arg, load_policy_arg);
+    policy_script_env, force_arg, load_policy_arg);
   int adb_ret = mini_adb_shell(remote_cmd);
   pr_info("mini-adb returned %d\n", adb_ret);
   result = adb_ret;

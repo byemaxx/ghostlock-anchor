@@ -15,4 +15,4 @@
 .externalNativeBuild
 .cxx
 local.properties
-/app/
+/app/release
