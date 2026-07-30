@@ -78,6 +78,7 @@ class MainActivity : ComponentActivity() {
                     onShowDetailedDiagnostics = controller::detailedDiagnostics,
                     onToggleAutoDisableUsbDebugging = ::setAutoDisableUsbDebugging,
                     onToggleForceUmh = ::setForceUmh,
+                    onToggleLoadPolicy = ::setLoadPolicy,
                     onShowBasicInfo = ::loadBasicInfo,
                     onImport = ::importKey
                 )
@@ -137,6 +138,11 @@ class MainActivity : ComponentActivity() {
         refreshUi()
     }
 
+    private fun setLoadPolicy(enabled: Boolean) {
+        controller.setLoadPolicy(enabled)
+        refreshUi()
+    }
+
     private fun loadBasicInfo() {
         basicInfo = BootstrapBasicInfo.loading()
         Thread {
@@ -157,6 +163,7 @@ private fun BootstrapScreen(
     onShowDetailedDiagnostics: () -> String,
     onToggleAutoDisableUsbDebugging: (Boolean) -> Unit,
     onToggleForceUmh: (Boolean) -> Unit,
+    onToggleLoadPolicy: (Boolean) -> Unit,
     onShowBasicInfo: () -> Unit,
     onImport: (AdbKeyPart, Uri) -> Unit,
 ) {
@@ -245,11 +252,25 @@ private fun BootstrapScreen(
                                     checked = snapshot.forceUmh,
                                     onCheckedChange = null
                                 )
-                                Text("Force UMH mode (no W1/W2 fallback)")
+                                Text("UMH mode")
                             }
                         },
                         onClick = {
                             onToggleForceUmh(!snapshot.forceUmh)
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(
+                                    checked = snapshot.loadPolicy,
+                                    onCheckedChange = null
+                                )
+                                Text("load_policy")
+                            }
+                        },
+                        onClick = {
+                            onToggleLoadPolicy(!snapshot.loadPolicy)
                         }
                     )
                     DropdownMenuItem(

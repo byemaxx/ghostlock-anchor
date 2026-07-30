@@ -16,11 +16,12 @@ data class BootstrapSnapshot(
     val stopping: Boolean,
     val autoDisableUsbDebugging: Boolean,
     val forceUmh: Boolean,
+    val loadPolicy: Boolean,
     val status: String,
     val log: String,
 ) {
     companion object {
-        fun empty() = BootstrapSnapshot(AdbKeyStatus.MISSING_BOTH, false, false, false, false, "Checking…", "")
+        fun empty() = BootstrapSnapshot(AdbKeyStatus.MISSING_BOTH, false, false, false, false, false, "Checking…", "")
     }
 }
 
@@ -69,6 +70,7 @@ class BootstrapController(private val context: Context) {
             stopping = BootstrapService.isStopRequested(),
             autoDisableUsbDebugging = autoDisableUsbDebugging(),
             forceUmh = forceUmh(),
+            loadPolicy = loadPolicy(),
             status = status,
             log = log
         )
@@ -96,14 +98,20 @@ class BootstrapController(private val context: Context) {
     }.getOrDefault(false)
 
     fun setAutoDisableUsbDebugging(enabled: Boolean) {
-        writeOptions(autoDisableUsbDebugging = enabled, forceUmh = forceUmh())
+        writeOptions(autoDisableUsbDebugging = enabled, forceUmh = forceUmh(), loadPolicy = loadPolicy())
     }
 
     fun setForceUmh(enabled: Boolean) {
-        writeOptions(autoDisableUsbDebugging = autoDisableUsbDebugging(), forceUmh = enabled)
+        writeOptions(autoDisableUsbDebugging = autoDisableUsbDebugging(), forceUmh = enabled, loadPolicy = loadPolicy())
+    }
+
+    fun setLoadPolicy(enabled: Boolean) {
+        writeOptions(autoDisableUsbDebugging = autoDisableUsbDebugging(), forceUmh = forceUmh(), loadPolicy = enabled)
     }
 
     fun forceUmh(): Boolean = readOption("force_umh")
+
+    fun loadPolicy(): Boolean = readOption("load_policy", default = true)
 
     fun basicInfo(): BootstrapBasicInfo {
         val tcpAdb = runCatching {
@@ -123,15 +131,20 @@ class BootstrapController(private val context: Context) {
 
     private fun autoDisableUsbDebugging(): Boolean = readOption("disable_usb_debugging")
 
-    private fun readOption(name: String): Boolean = runCatching {
-        optionsFile.readText().lineSequence().any { it.trim() == "$name=1" }
-    }.getOrDefault(false)
+    private fun readOption(name: String, default: Boolean = false): Boolean = runCatching {
+        optionsFile.readText().lineSequence()
+            .map { it.trim() }
+            .firstOrNull { it.startsWith("$name=") }
+            ?.let { it == "$name=1" }
+            ?: default
+    }.getOrDefault(default)
 
-    private fun writeOptions(autoDisableUsbDebugging: Boolean, forceUmh: Boolean) {
+    private fun writeOptions(autoDisableUsbDebugging: Boolean, forceUmh: Boolean, loadPolicy: Boolean) {
         optionsFile.parentFile?.mkdirs()
         optionsFile.writeText(
             "disable_usb_debugging=${if (autoDisableUsbDebugging) 1 else 0}\n" +
-                "force_umh=${if (forceUmh) 1 else 0}\n"
+                "force_umh=${if (forceUmh) 1 else 0}\n" +
+                "load_policy=${if (loadPolicy) 1 else 0}\n"
         )
     }
 

