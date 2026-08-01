@@ -65,6 +65,10 @@ class MainActivity : ComponentActivity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
         refreshUi()
+        Thread {
+            controller.prepareAdbKey()
+            runOnUiThread(::refreshUi)
+        }.start()
         enableEdgeToEdge()
         setContent {
             AnchorTheme {

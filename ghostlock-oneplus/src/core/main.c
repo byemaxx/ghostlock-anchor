@@ -113,6 +113,13 @@ static int select_offsets(void) {
   for (int i = 0; known_offsets[i].uname_r; i++) {
     if (strcmp(uts.release, known_offsets[i].uname_r) == 0) {
       active_offsets = &known_offsets[i];
+      /* Kernel profiles may require the UMH path because their W1/W2 route is
+       * unsafe or unvalidated.  Promote that profile requirement to the same
+       * exclusive mode used by --force-umh; the later failure path then
+       * refuses to fall back to W1/W2. */
+      if (active_offsets->requires_umh)
+        force_umh_mode = 1;
+
       /* Only entries that explicitly opt in (currently OP13) override the
        * pselect waiter layout and route timing.  All other kernels use the
        * target defaults and do not inherit OP13 tuning. */

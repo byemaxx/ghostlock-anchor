@@ -83,6 +83,12 @@ class BootstrapController(private val context: Context) {
         )
     }
 
+    fun prepareAdbKey() {
+        keyStore.ensureGenerated().onFailure {
+            appendDiagnostic("[!] ADB key setup failed: ${it.message}")
+        }
+    }
+
     fun appendDiagnostic(line: String) = logStore.appendDiagnostic(line)
 
     fun recordResult(line: String) = logStore.recordResult(line)

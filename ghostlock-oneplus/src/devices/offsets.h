@@ -54,12 +54,23 @@ struct kernel_offsets {
   .task_comm=0x830, .task_tasks=0x550, .task_seccomp=0x8E8, \
   .mm_owner=0x2B0
 
+/* 6.1 GKI layout from the Houji BTF extraction. */
+#define STRUCT_OFFSETS_6_1 \
+  .task_prio=0x84, .task_normal_prio=0x8C, .task_sched_task_group=0x348, \
+  .task_pi_lock=0x924, .task_pi_waiters=0x938, \
+  .task_pi_top_task=0x948, .task_pi_blocked_on=0x950, \
+  .task_pid=0x630, .task_tgid=0x634, .task_real_parent=0x640, \
+  .task_atomic_flags=0x5F0, .task_real_cred=0x830, .task_cred=0x838, \
+  .task_comm=0x848, .task_tasks=0x550, .task_seccomp=0x900, \
+  .mm_owner=0x2A0
+
 static const struct kernel_offsets known_offsets[] = {
   /* Add new devices by creating src/devices/<name>/offsets.h */
 #include "ace6t/offsets.h"
 #include "op13/offsets.h"
 #include "op15/offsets.h"
 #include "findx9ultra/offsets.h"
+#include "houji/offsets.h"
 #include "pudding/offsets.h"
   { .uname_r = NULL }
 };
