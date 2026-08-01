@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.IBinder
+import android.os.Build
 import android.os.PowerManager
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -67,11 +68,34 @@ class BootstrapService : Service() {
             }
 
             updateStatus("Anchor is running")
-            val startedProcess = ProcessBuilder(binary.absolutePath, "--bootstrap")
+            val kernelProfile = KernelProfiles.current(applicationContext)
+            val shiftOverride = controller.pselectShiftOverride().trim()
+            val effectivePselectShift = shiftOverride.ifBlank { kernelProfile.pselectShift?.toString().orEmpty() }
+            controller.appendDiagnostic(
+                "[+] native launch profile: device=${Build.DEVICE} model=${Build.MODEL} " +
+                    "directory=${kernelProfile.deviceDirectory} default=${kernelProfile.pselectShift ?: "<native>"} " +
+                    "override=${shiftOverride.ifBlank { "<none>" }} " +
+                    "effective=${effectivePselectShift.ifBlank { "<unset>" }}"
+            )
+            // Mirror upstream's shell form through ProcessBuilder's environment:
+            //   PSELECT_SHIFT=-2 /data/local/tmp/a/e --bootstrap
+            // Do not use Toybox env here: Android's randomized app path can contain
+            // '=' and Toybox env may mistake that path for another assignment.
+            val nativeCommand = listOf(binary.absolutePath, "--bootstrap")
+            controller.appendDiagnostic(
+                "[+] native command: PSELECT_SHIFT=${effectivePselectShift.ifBlank { "<native>" }} " +
+                    nativeCommand.joinToString(" ")
+            )
+            val startedProcess = ProcessBuilder(nativeCommand)
                 .redirectErrorStream(true)
                 .apply {
-                    // PSELECT_SHIFT is selected by the native kernel profile;
-                    // PSELECT_ROUTE_DELAY_USEC is intentionally disabled for now.
+                    applyEnvironmentOverrides(environment(), controller.preEnv())
+                    val pselectShift = effectivePselectShift
+                    if (pselectShift.isBlank()) {
+                        environment().remove("PSELECT_SHIFT")
+                    } else {
+                        environment()["PSELECT_SHIFT"] = pselectShift
+                    }
                     environment()["ANCHOR_ADBKEY_PATH"] = keyStore.privateKey.absolutePath
                     environment()["ANCHOR_ADBKEY_PUB_PATH"] = keyStore.publicKey.absolutePath
                     environment()["ANCHOR_BOOTSTRAP_LOCK_DIR"] = bootstrapLockDir.absolutePath
@@ -133,6 +157,21 @@ class BootstrapService : Service() {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
+    }
+
+    private fun applyEnvironmentOverrides(environment: MutableMap<String, String>, value: String) {
+        value.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && !it.startsWith('#') }
+            .forEach { entry ->
+                val separator = entry.indexOf('=')
+                if (separator > 0) {
+                    val name = entry.substring(0, separator).trim()
+                    if (name.matches(Regex("[A-Za-z_][A-Za-z0-9_]*"))) {
+                        environment[name] = entry.substring(separator + 1)
+                    }
+                }
+            }
     }
 
     private fun waitForRoot(): Boolean {

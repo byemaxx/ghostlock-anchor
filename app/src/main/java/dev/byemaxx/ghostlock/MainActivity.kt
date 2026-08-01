@@ -24,16 +24,18 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -46,6 +48,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import com.anchor.bootstrap.ui.theme.AnchorTheme
 import kotlinx.coroutines.delay
@@ -83,6 +87,7 @@ class MainActivity : ComponentActivity() {
                     onToggleAutoDisableUsbDebugging = ::setAutoDisableUsbDebugging,
                     onToggleForceUmh = ::setForceUmh,
                     onToggleLoadPolicy = ::setLoadPolicy,
+                    onSaveDevSettings = controller::setDevSettings,
                     onShowBasicInfo = ::loadBasicInfo,
                     onImport = ::importKey
                 )
@@ -168,6 +173,7 @@ private fun BootstrapScreen(
     onToggleAutoDisableUsbDebugging: (Boolean) -> Unit,
     onToggleForceUmh: (Boolean) -> Unit,
     onToggleLoadPolicy: (Boolean) -> Unit,
+    onSaveDevSettings: (String, String) -> Unit,
     onShowBasicInfo: () -> Unit,
     onImport: (AdbKeyPart, Uri) -> Unit,
 ) {
@@ -175,6 +181,7 @@ private fun BootstrapScreen(
     var menuOpen by remember { mutableStateOf(false) }
     var showBasicInfo by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
+    var showDevSettings by remember { mutableStateOf(false) }
     var showDetailedDiagnostics by remember { mutableStateOf(false) }
     var detailedDiagnostics by remember { mutableStateOf("") }
     val uriHandler = LocalUriHandler.current
@@ -198,10 +205,20 @@ private fun BootstrapScreen(
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Row(modifier = Modifier.fillMaxWidth()) {
-            Text("Anchor", style = MaterialTheme.typography.headlineMedium)
-            Spacer(Modifier.weight(1f))
-            Box {
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Anchor", style = MaterialTheme.typography.headlineMedium)
+                    Text(
+                        "GhostLock bootstrap",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Box {
                 TextButton(onClick = { menuOpen = true }) { Text("Menu") }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     DropdownMenuItem(
@@ -236,45 +253,10 @@ private fun BootstrapScreen(
                         }
                     )
                     DropdownMenuItem(
-                        text = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Checkbox(
-                                    checked = snapshot.autoDisableUsbDebugging,
-                                    onCheckedChange = null
-                                )
-                                Text("Disable USB debugging after completion")
-                            }
-                        },
+                        text = { Text("Dev settings") },
                         onClick = {
-                            onToggleAutoDisableUsbDebugging(!snapshot.autoDisableUsbDebugging)
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Checkbox(
-                                    checked = snapshot.forceUmh,
-                                    onCheckedChange = null
-                                )
-                                Text("UMH mode")
-                            }
-                        },
-                        onClick = {
-                            onToggleForceUmh(!snapshot.forceUmh)
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Checkbox(
-                                    checked = snapshot.loadPolicy,
-                                    onCheckedChange = null
-                                )
-                                Text("load_policy")
-                            }
-                        },
-                        onClick = {
-                            onToggleLoadPolicy(!snapshot.loadPolicy)
+                            menuOpen = false
+                            showDevSettings = true
                         }
                     )
                     DropdownMenuItem(
@@ -295,20 +277,23 @@ private fun BootstrapScreen(
                     )
                 }
             }
+            }
         }
 
-        Row(modifier = Modifier.fillMaxWidth()) {
-            Button(
-                onClick = onRun,
-                enabled = snapshot.keyStatus.ready && !snapshot.running,
-                modifier = Modifier.weight(1f)
-            ) { Text(if (snapshot.stopping) "Stopping…" else if (snapshot.running) "Bootstrap running…" else "Start Bootstrap") }
-            Spacer(Modifier.width(8.dp))
-            TextButton(
-                onClick = onStop,
-                enabled = snapshot.running && !snapshot.stopping,
-                modifier = Modifier.width(72.dp)
-            ) { Text("Stop") }
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Row(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+                Button(
+                    onClick = onRun,
+                    enabled = snapshot.keyStatus.ready && !snapshot.running,
+                    modifier = Modifier.weight(1f)
+                ) { Text(if (snapshot.stopping) "Stopping…" else if (snapshot.running) "Bootstrap running…" else "Start Bootstrap") }
+                Spacer(Modifier.width(8.dp))
+                TextButton(
+                    onClick = onStop,
+                    enabled = snapshot.running && !snapshot.stopping,
+                    modifier = Modifier.width(72.dp)
+                ) { Text("Stop") }
+            }
         }
 
         LogPanel(snapshot.log, Modifier.weight(1f))
@@ -329,6 +314,20 @@ private fun BootstrapScreen(
             confirmButton = {
                 TextButton(onClick = { showBasicInfo = false }) { Text("Close") }
             }
+        )
+    }
+
+    if (showDevSettings) {
+        DevSettingsDialog(
+            snapshot = snapshot,
+            onDismiss = { showDevSettings = false },
+            onSave = { pselectShift, preEnv ->
+                onSaveDevSettings(pselectShift, preEnv)
+                showDevSettings = false
+            },
+            onToggleAutoDisableUsbDebugging = onToggleAutoDisableUsbDebugging,
+            onToggleForceUmh = onToggleForceUmh,
+            onToggleLoadPolicy = onToggleLoadPolicy,
         )
     }
 
@@ -373,6 +372,129 @@ private fun BootstrapScreen(
                 TextButton(onClick = { showDetailedDiagnostics = false }) { Text("Close") }
             }
         )
+    }
+}
+
+@Composable
+private fun DevSettingsDialog(
+    snapshot: BootstrapSnapshot,
+    onDismiss: () -> Unit,
+    onSave: (String, String) -> Unit,
+    onToggleAutoDisableUsbDebugging: (Boolean) -> Unit,
+    onToggleForceUmh: (Boolean) -> Unit,
+    onToggleLoadPolicy: (Boolean) -> Unit,
+) {
+    var pselectShift by remember { mutableStateOf(snapshot.pselectShiftOverride) }
+    var pselectOverrideEnabled by remember { mutableStateOf(snapshot.pselectShiftOverride.isNotBlank()) }
+    var preEnv by remember { mutableStateOf(snapshot.preEnv) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Developer settings") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                DevSettingsSection(
+                    title = "Before run",
+                ) {
+                    DevSwitchRow(
+                        checked = snapshot.forceUmh,
+                        onCheckedChange = onToggleForceUmh,
+                        title = "Force UMH mode"
+                    )
+                    DevSwitchRow(
+                        checked = pselectOverrideEnabled,
+                        onCheckedChange = { enabled ->
+                            pselectOverrideEnabled = enabled
+                            if (enabled && pselectShift.isBlank()) {
+                                pselectShift = snapshot.pselectShiftDefault
+                            }
+                        },
+                        title = "Override PSELECT_SHIFT"
+                    )
+                    OutlinedTextField(
+                        value = if (pselectOverrideEnabled) pselectShift else snapshot.pselectShiftDefault,
+                        onValueChange = { value ->
+                            if (value.matches(Regex("-?\\d{0,3}"))) pselectShift = value
+                        },
+                        label = { Text("PSELECT_SHIFT") },
+                        supportingText = {
+                            Text("Default: ${snapshot.pselectShiftDefault.ifBlank { "native" }}")
+                        },
+                        enabled = pselectOverrideEnabled,
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = preEnv,
+                        onValueChange = { preEnv = it },
+                        label = { Text("Environment variables") },
+                        placeholder = { Text("NAME=VALUE") },
+                        singleLine = false,
+                        minLines = 3,
+                        maxLines = 4,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                DevSettingsSection(
+                    title = "After run",
+                ) {
+                    DevSwitchRow(
+                        checked = snapshot.loadPolicy,
+                        onCheckedChange = onToggleLoadPolicy,
+                        title = "Load SELinux policy"
+                    )
+                    DevSwitchRow(
+                        checked = snapshot.autoDisableUsbDebugging,
+                        onCheckedChange = onToggleAutoDisableUsbDebugging,
+                        title = "Disable USB debugging"
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onSave(if (pselectOverrideEnabled) pselectShift else "", preEnv)
+            }) { Text("Save") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+private fun DevSettingsSection(
+    title: String,
+    content: @Composable () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(title, style = MaterialTheme.typography.titleSmall)
+        content()
+    }
+}
+
+@Composable
+private fun DevSwitchRow(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    title: String,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+        }
+        Switch(checked = checked, onCheckedChange = null)
     }
 }
 

@@ -17,11 +17,14 @@ data class BootstrapSnapshot(
     val autoDisableUsbDebugging: Boolean,
     val forceUmh: Boolean,
     val loadPolicy: Boolean,
+    val pselectShiftDefault: String,
+    val pselectShiftOverride: String,
+    val preEnv: String,
     val status: String,
     val log: String,
 ) {
     companion object {
-        fun empty() = BootstrapSnapshot(AdbKeyStatus.MISSING_BOTH, false, false, false, false, false, "Checking…", "")
+        fun empty() = BootstrapSnapshot(AdbKeyStatus.MISSING_BOTH, false, false, false, false, false, "", "", "", "Checking…", "")
     }
 }
 
@@ -71,6 +74,9 @@ class BootstrapController(private val context: Context) {
             autoDisableUsbDebugging = autoDisableUsbDebugging(),
             forceUmh = forceUmh(),
             loadPolicy = loadPolicy(),
+            pselectShiftDefault = KernelProfiles.current(context).pselectShift?.toString() ?: "",
+            pselectShiftOverride = pselectShiftOverride(),
+            preEnv = preEnv(),
             status = status,
             log = log
         )
@@ -104,20 +110,31 @@ class BootstrapController(private val context: Context) {
     }.getOrDefault(false)
 
     fun setAutoDisableUsbDebugging(enabled: Boolean) {
-        writeOptions(autoDisableUsbDebugging = enabled, forceUmh = forceUmh(), loadPolicy = loadPolicy())
+        writeOptions(enabled, configuredForceUmh(), loadPolicy(), pselectShiftOverride(), preEnv())
     }
 
     fun setForceUmh(enabled: Boolean) {
-        writeOptions(autoDisableUsbDebugging = autoDisableUsbDebugging(), forceUmh = enabled, loadPolicy = loadPolicy())
+        writeOptions(autoDisableUsbDebugging(), enabled, loadPolicy(), pselectShiftOverride(), preEnv())
     }
 
     fun setLoadPolicy(enabled: Boolean) {
-        writeOptions(autoDisableUsbDebugging = autoDisableUsbDebugging(), forceUmh = forceUmh(), loadPolicy = enabled)
+        writeOptions(autoDisableUsbDebugging(), configuredForceUmh(), enabled, pselectShiftOverride(), preEnv())
     }
 
-    fun forceUmh(): Boolean = readOption("force_umh")
+    fun setDevSettings(pselectShiftOverride: String, preEnv: String) {
+        writeOptions(
+            autoDisableUsbDebugging(), configuredForceUmh(), loadPolicy(),
+            pselectShiftOverride, preEnv
+        )
+    }
+
+    fun forceUmh(): Boolean = configuredForceUmh()
 
     fun loadPolicy(): Boolean = readOption("load_policy", default = true)
+
+    fun pselectShiftOverride(): String = readTextOption("pselect_shift_override")
+
+    fun preEnv(): String = readTextOption("pre_env")
 
     fun basicInfo(): BootstrapBasicInfo {
         val tcpAdb = runCatching {
@@ -128,7 +145,7 @@ class BootstrapController(private val context: Context) {
             model = Build.MODEL,
             device = Build.DEVICE,
             androidVersion = Build.VERSION.RELEASE,
-            kernel = System.getProperty("os.version") ?: "Unknown",
+            kernel = KernelProfiles.readKernelRelease(),
             usbDebugging = isUsbDebuggingEnabled(),
             tcpAdb = tcpAdb,
             keyStatus = keyStore.status().description,
@@ -136,6 +153,8 @@ class BootstrapController(private val context: Context) {
     }
 
     private fun autoDisableUsbDebugging(): Boolean = readOption("disable_usb_debugging")
+
+    private fun configuredForceUmh(): Boolean = readOption("force_umh")
 
     private fun readOption(name: String, default: Boolean = false): Boolean = runCatching {
         optionsFile.readText().lineSequence()
@@ -145,14 +164,32 @@ class BootstrapController(private val context: Context) {
             ?: default
     }.getOrDefault(default)
 
-    private fun writeOptions(autoDisableUsbDebugging: Boolean, forceUmh: Boolean, loadPolicy: Boolean) {
+    private fun readTextOption(name: String): String = runCatching {
+        optionsFile.readText().lineSequence()
+            .map { it.trim() }
+            .firstOrNull { it.startsWith("$name=") }
+            ?.substringAfter('=')
+            ?: ""
+    }.getOrDefault("")
+
+    private fun writeOptions(
+        autoDisableUsbDebugging: Boolean,
+        forceUmh: Boolean,
+        loadPolicy: Boolean,
+        pselectShiftOverride: String,
+        preEnv: String,
+    ) {
         optionsFile.parentFile?.mkdirs()
         optionsFile.writeText(
             "disable_usb_debugging=${if (autoDisableUsbDebugging) 1 else 0}\n" +
                 "force_umh=${if (forceUmh) 1 else 0}\n" +
-                "load_policy=${if (loadPolicy) 1 else 0}\n"
+                "load_policy=${if (loadPolicy) 1 else 0}\n" +
+                "pselect_shift_override=${optionValue(pselectShiftOverride)}\n" +
+                "pre_env=${optionValue(preEnv)}\n"
         )
     }
+
+    private fun optionValue(value: String): String = value.replace('\n', ' ').replace('\r', ' ')
 
     private fun completedRunLog(): String {
         val diagnostics = logStore.readCurrentDiagnostics().trimEnd()

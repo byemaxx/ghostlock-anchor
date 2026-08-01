@@ -15,13 +15,19 @@ class AppLogStore(context: Context) {
         directory.mkdirs()
         val data = (line.take(MAX_LINE_CHARS) + "\n").toByteArray(Charsets.UTF_8)
         if (activeLog.length() + data.size > MAX_LOG_BYTES) rotate()
-        FileOutputStream(activeLog, true).use { it.write(data) }
+        FileOutputStream(activeLog, true).use {
+            it.write(data)
+            it.fd.sync()
+        }
     }
 
     @Synchronized
     fun recordResult(line: String) {
         resultFile.parentFile?.mkdirs()
-        resultFile.writeText(line.take(MAX_RESULT_CHARS) + "\n", Charsets.UTF_8)
+        FileOutputStream(resultFile, false).use {
+            it.write((line.take(MAX_RESULT_CHARS) + "\n").toByteArray(Charsets.UTF_8))
+            it.fd.sync()
+        }
     }
 
     fun readResult(): String = runCatching { resultFile.readText(Charsets.UTF_8).trim() }.getOrDefault("")

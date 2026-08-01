@@ -4,7 +4,7 @@
  * _stext - _text = 0x10000, so the image load base is 0xa8010000-0x10000. */
 
 OFFSETS_ENTRY("6.6.89-android15-8-gf4dc45704e54-abogki446052083-4k",  /* IN2060_16.0.2.403 */
-  .kernel_phys_load=0xa8000000, STRUCT_OFFSETS_6_6, .pselect_shift=-2, .requires_umh=1, .off_init_task=0x0210E780, .off_init_cred=0x02120A48, .off_init_uts_ns=0x02292D10,
+  .kernel_phys_load=0xa8000000, STRUCT_OFFSETS_6_6, .off_init_task=0x0210E780, .off_init_cred=0x02120A48, .off_init_uts_ns=0x02292D10,
   .off_empty_zero_page=0x022FE000, .off_root_task_group=0x02306580,
   .off_selinux_enforcing=0x023490E0, .off_kptr_restrict=0x0210C220,
   .off_selinux_blob_sizes=0x01665080, .off_security_hook_heads=0x01664948,
@@ -21,7 +21,7 @@ OFFSETS_ENTRY("6.6.89-android15-8-gf4dc45704e54-abogki446052083-4k",  /* IN2060_
   .off_system_unbound_wq=0x020FB320, .off_call_usermodehelper_exec_work=0x000CFA54,
 ),
 OFFSETS_ENTRY("6.6.89-android15-8-g97a9aaefab9a-ab14519050-4k",  /* CPH2655_16.0.8 (Global / OxygenOS) */
-  .kernel_phys_load=0xa8000000, STRUCT_OFFSETS_6_6, .pselect_shift=-2, .requires_umh=1, .off_init_task=0x020FE280, .off_init_cred=0x02110548, .off_init_uts_ns=0x02282190,
+  .kernel_phys_load=0xa8000000, STRUCT_OFFSETS_6_6, .off_init_task=0x020FE280, .off_init_cred=0x02110548, .off_init_uts_ns=0x02282190,
   .off_empty_zero_page=0x022ED000, .off_root_task_group=0x022F5580,
   .off_selinux_enforcing=0x02336EA0, .off_kptr_restrict=0x020FBD20,
   .off_selinux_blob_sizes=0x016626F0, .off_security_hook_heads=0x01661FB8,
@@ -38,7 +38,7 @@ OFFSETS_ENTRY("6.6.89-android15-8-g97a9aaefab9a-ab14519050-4k",  /* CPH2655_16.0
   .off_system_unbound_wq=0x020EAE60, .off_call_usermodehelper_exec_work=0x000CFA4C,
 ),
 OFFSETS_ENTRY("6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k",  /* New kernel for op13 */
-  .kernel_phys_load=0xa8000000, STRUCT_OFFSETS_6_6, .pselect_shift=-2, .requires_umh=1, .off_init_task=0x0211E280, .off_init_cred=0x02130748, .off_init_uts_ns=0x022A3448,
+  .kernel_phys_load=0xa8000000, STRUCT_OFFSETS_6_6, .off_init_task=0x0211E280, .off_init_cred=0x02130748, .off_init_uts_ns=0x022A3448,
   .off_empty_zero_page=0x0230F000, .off_root_task_group=0x02317580,
   .off_selinux_enforcing=0x02358EE0, .off_kptr_restrict=0x0211BCF8,
   .off_selinux_blob_sizes=0x0167B5D0, .off_security_hook_heads=0x0167AE98,
@@ -55,7 +55,7 @@ OFFSETS_ENTRY("6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k",  /* New kernel 
   .off_system_unbound_wq=0x0210AE60, .off_call_usermodehelper_exec_work=0x000D0EF0,
 ),
 OFFSETS_ENTRY("6.6.118-android15-8-g93e223c276e7-abogki500782043-4k",  /* OP13 new boot.img */
-  .kernel_phys_load=0xa8000000, STRUCT_OFFSETS_6_6, .pselect_shift=-2, .requires_umh=1, .off_init_task=0x0213E780, .off_init_cred=0x02150C48, .off_init_uts_ns=0x022C41C8,
+  .kernel_phys_load=0xa8000000, STRUCT_OFFSETS_6_6, .off_init_task=0x0213E780, .off_init_cred=0x02150C48, .off_init_uts_ns=0x022C41C8,
   .off_empty_zero_page=0x02330000, .off_root_task_group=0x02338580,
   .off_selinux_enforcing=0x0237B220, .off_kptr_restrict=0x0213C1F8,
   .off_selinux_blob_sizes=0x0168EA28, .off_security_hook_heads=0x0168E2F0,
@@ -71,7 +71,7 @@ OFFSETS_ENTRY("6.6.118-android15-8-g93e223c276e7-abogki500782043-4k",  /* OP13 n
   .off_slide_boot_id=0x0239C218,
 ),
 OFFSETS_ENTRY("6.6.30-android15-8-g013ec21bba94-abogki383916444-4k",  /* boot.img */
-  .kernel_phys_load=0xa8000000, STRUCT_OFFSETS_6_6, .pselect_shift=-2, .requires_umh=1, .off_init_task=0x0208D080, .off_init_cred=0x0209F2E8, .off_init_uts_ns=0x0220EAD8,
+  .kernel_phys_load=0xa8000000, STRUCT_OFFSETS_6_6, .off_init_task=0x0208D080, .off_init_cred=0x0209F2E8, .off_init_uts_ns=0x0220EAD8,
   .off_empty_zero_page=0x02275000, .off_root_task_group=0x0227D500,
   .off_selinux_enforcing=0x022BC8A8, .off_kptr_restrict=0x0208AB20,
   .off_selinux_blob_sizes=0x01615AE0, .off_security_hook_heads=0x016153A8,

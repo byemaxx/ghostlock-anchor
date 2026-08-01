@@ -21,17 +21,12 @@ struct kernel_offsets {
   /* UMH root: workqueue symbol offsets (0 = unavailable for this kernel). */
   uint64_t off_system_unbound_wq;
   uint64_t off_call_usermodehelper_exec_work;
-  /* Some device families must never fall back to the destructive W1/W2 paths. */
-  uint8_t requires_umh;
-
   /* Per-kernel task/mm layout.  Zero selects the compile-time fallback. */
   uint32_t task_prio, task_normal_prio, task_sched_task_group;
   uint32_t task_pi_lock, task_pi_waiters, task_pi_top_task, task_pi_blocked_on;
   uint32_t task_pid, task_tgid, task_real_parent, task_atomic_flags;
   uint32_t task_real_cred, task_cred, task_comm, task_tasks, task_seccomp;
   uint32_t mm_owner;
-  /* Optional pselect waiter-word shift; zero means use the target default. */
-  int32_t pselect_shift;
 };
 
 #define OFFSETS_ENTRY(uname, ...) { .uname_r = uname, __VA_ARGS__ }

@@ -113,22 +113,6 @@ static int select_offsets(void) {
   for (int i = 0; known_offsets[i].uname_r; i++) {
     if (strcmp(uts.release, known_offsets[i].uname_r) == 0) {
       active_offsets = &known_offsets[i];
-      /* Kernel profiles may require the UMH path because their W1/W2 route is
-       * unsafe or unvalidated.  Promote that profile requirement to the same
-       * exclusive mode used by --force-umh; the later failure path then
-       * refuses to fall back to W1/W2. */
-      if (active_offsets->requires_umh)
-        force_umh_mode = 1;
-
-      /* Only entries that explicitly opt in (currently OP13) override the
-       * pselect waiter layout and route timing.  All other kernels use the
-       * target defaults and do not inherit OP13 tuning. */
-      unsetenv("PSELECT_SHIFT");
-      unsetenv("PSELECT_ROUTE_DELAY_USEC");
-      if (active_offsets->pselect_shift) {
-        setenv("PSELECT_SHIFT", "-2", 1);
-        /* setenv("PSELECT_ROUTE_DELAY_USEC", "50000", 1); */
-      }
       pr_success("offsets matched: %s\n", active_offsets->uname_r);
       pr_info("pselect parameters: PSELECT_SHIFT=%s "
               "PSELECT_ROUTE_DELAY_USEC=%s\n",
@@ -665,6 +649,10 @@ static int deploy_policy_repair_script(void) {
   }
   chown(BRIDGE_STATE_DIR, 0, 0);
   chmod(BRIDGE_STATE_DIR, 0700);
+  /* A new bootstrap run must not inherit a previous successful repair state.
+   * The late-load script uses this state to avoid running twice within the
+   * same handoff, so clear it before publishing the new repair script. */
+  unlink(BRIDGE_STATE_DIR "/policy-repair.state");
   pr_success("policy repair script deployed\n");
   return 1;
 }
@@ -755,21 +743,7 @@ static int write_root_script_at(const char *script_path) {
     "if [ ! -f \"$KSUD\" ]; then KSUD=/data/adb/ksu/bin/ksud; fi\n"
     "if [ ! -f \"$KSUD\" ]; then KSUD=$(find /data/app -path '*/me.weishu.kernelsu*/lib/arm64/libksud.so' 2>/dev/null | head -n 1); fi\n"
     "if [ -f \"$KSUD\" ]; then chmod 755 \"$KSUD\" 2>/dev/null; fi\n"
-    "if grep -q kernelsu /proc/modules 2>/dev/null; then\n"
-    "  APK=$(pm path com.resukisu.resukisu 2>/dev/null | sed -n 's/^package://p' | head -n 1)\n"
-    "  if [ -z \"$APK\" ]; then APK=$(pm path me.weishu.kernelsu 2>/dev/null | sed -n 's/^package://p' | head -n 1); fi\n"
-    "  if [ -x \"$KSUD\" ] && [ -n \"$APK\" ]; then\n"
-    "    MANAGER_LOG=$STATE_DIR/manager-selection.log\n"
-    "    \"$KSUD\" kernel dynamic-manager set-apk \"$APK\" >\"$MANAGER_LOG\" 2>&1\n"
-    "    MANAGER_RC=$?\n"
-    "  else\n"
-    "    MANAGER_RC=127\n"
-    "    MANAGER_LOG=$STATE_DIR/manager-selection.log\n"
-    "    printf 'ksud=%s\\napk=%s\\n' \"$KSUD\" \"$APK\" >\"$MANAGER_LOG\"\n"
-    "  fi\n"
-    "  printf 'ksud=%s\\napk=%s\\nrc=%s\\n' \"$KSUD\" \"$APK\" \"$MANAGER_RC\" >>\"$MANAGER_LOG\"\n"
-    "  if grep -qx 'result=success' $STATE_DIR/policy-repair.state 2>/dev/null; then state root-ready-policy-repaired; elif grep -qx 'result=disabled' $STATE_DIR/policy-repair.state 2>/dev/null; then state root-ready-policy-repair-disabled; else state root-ready-policy-repair-pending; fi\n"
-    "elif [ -x \"$KSUD\" ] || [ -f \"$KSUD\" ]; then\n"
+    "if [ -x \"$KSUD\" ] || [ -f \"$KSUD\" ]; then\n"
     "  chmod 755 \"$KSUD\" 2>/dev/null\n"
     "  KVER=$(uname -r | cut -d. -f1-2)\n"
     "  AVER=$(uname -r | grep -o 'android[0-9]*')\n"
@@ -796,7 +770,7 @@ static int write_root_script_at(const char *script_path) {
     "      printf 'ksud=%s\\napk=%s\\n' \"$KSUD\" \"$APK\" >\"$MANAGER_LOG\"\n"
     "    fi\n"
     "    printf 'ksud=%s\\napk=%s\\nrc=%s\\n' \"$KSUD\" \"$APK\" \"$MANAGER_RC\" >>\"$MANAGER_LOG\"\n"
-    "    if grep -qx 'result=success' $STATE_DIR/policy-repair.state 2>/dev/null; then state root-ready-policy-repaired; elif grep -qx 'result=disabled' $STATE_DIR/policy-repair.state 2>/dev/null; then state root-ready-policy-repair-disabled; elif grep -qx 'result=late-load-complete' \"$STATE\" 2>/dev/null; then state root-ready-policy-repair-failed; else state root-ready-policy-repair-pending; fi\n"
+    "    if grep -qx 'result=success' $STATE_DIR/policy-repair.state 2>/dev/null; then state root-ready-policy-repaired; elif grep -qx 'result=disabled' $STATE_DIR/policy-repair.state 2>/dev/null; then state root-ready-policy-repair-disabled; elif grep -qx 'result=failed' $STATE_DIR/policy-repair.state 2>/dev/null; then state root-ready-policy-repair-failed; else state root-ready-policy-repair-pending; fi\n"
     "  else state root-unavailable; fi\n"
     "else\n"
     "  state root-unavailable\n"
@@ -1261,6 +1235,20 @@ tcp_ready:
                POLICY_REPAIR_SOURCE_ENV "='%s' ", policy_script);
     }
   }
+  /* The remote adbd shell is a new process and does not inherit the app
+   * process environment. Forward the validated pselect override explicitly,
+   * preserving the upstream form: PSELECT_SHIFT=-2 "$APPBIN". */
+  char pselect_env[64] = "";
+  const char *pselect_shift = getenv("PSELECT_SHIFT");
+  if (pselect_shift && pselect_shift[0]) {
+    char *end = NULL;
+    long shift = strtol(pselect_shift, &end, 10);
+    if (end != pselect_shift && *end == '\0' && shift >= -14 && shift <= 14) {
+      snprintf(pselect_env, sizeof(pselect_env), "PSELECT_SHIFT=%ld ", shift);
+    } else {
+      pr_warning("invalid PSELECT_SHIFT for remote shell: %s\n", pselect_shift);
+    }
+  }
   char remote_cmd[PATH_MAX + 2304];
   snprintf(remote_cmd, sizeof(remote_cmd),
     "rm -f /data/local/tmp/.ghostlock_root.sh /data/local/tmp/.ghostlock_w1 "
@@ -1269,10 +1257,10 @@ tcp_ready:
     "APK=$(pm path " ANCHOR_BOOTSTRAP_PACKAGE " 2>/dev/null | sed -n 's/^package://p' | head -n 1); "
     "if [ -z \"$APK\" ]; then RC=127; STAGE=apk-not-found; "
     "else APPBIN=${APK%%/base.apk}/lib/arm64/libanchor.so; "
-    "if [ -x \"$APPBIN\" ]; then %s\"$APPBIN\"%s%s; RC=$?; STAGE=anchor-exited; "
+    "if [ -x \"$APPBIN\" ]; then %s%s\"$APPBIN\"%s%s; RC=$?; STAGE=anchor-exited; "
     "else RC=126; STAGE=appbin-not-executable; fi; fi; "
     "printf '\\n__ANCHOR_STAGE=%%s\\n__ANCHOR_RC=%%s\\n' \"$STAGE\" \"$RC\"; exit \"$RC\"",
-    policy_script_env, force_arg, load_policy_arg);
+    policy_script_env, pselect_env, force_arg, load_policy_arg);
   int adb_ret = mini_adb_shell(remote_cmd);
   pr_info("mini-adb returned %d\n", adb_ret);
   result = adb_ret;
