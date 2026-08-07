@@ -16,3 +16,12 @@
 .cxx
 local.properties
 /app/release
+# Keystore
+key/
+
+# Local test outputs and crash logs
+*.txt
+*.log
+
+# Kernel build artifacts / debug symbols
+*.elf

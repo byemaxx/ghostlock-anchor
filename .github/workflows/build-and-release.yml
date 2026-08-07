@@ -1,0 +1,85 @@
+name: Build and Release APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Publish a GitHub Release?'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Decode Keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > app/keystore.jks
+          else
+            echo "KEYSTORE_BASE64 is empty, skipping signing."
+          fi
+
+      - name: Build Release APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          PYTHON: python3
+        run: |
+          chmod +x gradlew
+          if [ -f "app/keystore.jks" ]; then
+            export KEYSTORE_PATH="$(pwd)/app/keystore.jks"
+            ./gradlew assembleRelease
+          else
+            ./gradlew assembleRelease
+          fi
+
+      - name: Rename APK
+        id: rename_apk
+        run: |
+          VERSION_NAME=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts)
+          APK_PATH="app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "$APK_PATH" ]; then
+             APK_PATH="app/build/outputs/apk/release/app-release-unsigned.apk"
+          fi
+          NEW_APK_NAME="Anchor_v${VERSION_NAME}.apk"
+          mv "$APK_PATH" "$NEW_APK_NAME"
+          echo "apk_name=$NEW_APK_NAME" >> $GITHUB_OUTPUT
+          echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.rename_apk.outputs.apk_name }}
+          path: ${{ steps.rename_apk.outputs.apk_name }}
+
+      - name: Create Release
+        if: ${{ github.event.inputs.publish_release == 'true' }}
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.rename_apk.outputs.version_name }}
+          name: Release v${{ steps.rename_apk.outputs.version_name }}
+          files: ${{ steps.rename_apk.outputs.apk_name }}
+          generate_release_notes: true
