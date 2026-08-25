@@ -13,6 +13,7 @@ readonly state_file="$state_dir/policy-repair.state"
 stage="${ANCHOR_POLICY_REPAIR_STAGE:-manual}"
 original_config=unknown
 fixed_config=unknown
+load_method=none
 load_policy_rc=not-run
 failure_reason=
 
@@ -57,6 +58,7 @@ finish() {
         printf 'stage=%s\n' "$stage"
         printf 'original_config=0x%08x\n' "$original_config" 2>/dev/null || printf 'original_config=%s\n' "$original_config"
         printf 'fixed_config=0x%08x\n' "$fixed_config" 2>/dev/null || printf 'fixed_config=%s\n' "$fixed_config"
+        printf 'load_method=%s\n' "$load_method"
         printf 'load_policy_rc=%s\n' "$load_policy_rc"
         [ -z "$failure_reason" ] || printf 'reason=%s\n' "$failure_reason"
         printf 'selinux=%s\n' "$(getenforce 2>/dev/null || echo unknown)"
@@ -64,7 +66,7 @@ finish() {
     } >"$state_temp"
     chown 0:0 "$state_temp" 2>/dev/null || true
     chmod 600 "$state_temp" && mv -f "$state_temp" "$state_file"
-    printf '===== policy repair finished: status=%s =====\n' "$status"
+    printf '===== policy repair finished: status=%s method=%s =====\n' "$status" "$load_method"
     trap - EXIT
     exit "$status"
 }
@@ -98,8 +100,11 @@ printf 'policy repair: config 0x%08x -> 0x%08x (verified)\n' "$original_config" 
 policy_version=$(read_le32 "$((config_offset + 4))" "$policy_temp" || true)
 printf 'policy repair: version=%s stage=%s\n' "${policy_version:-unknown}" "$stage"
 if load_policy "$policy_temp"; then
+    load_method=load_policy_binary
     load_policy_rc=0
+    printf 'policy repair: successfully loaded via load_policy binary\n'
 else
+    load_method=failed
     load_policy_rc=$?
     fail "load_policy failed rc=$load_policy_rc"
 fi

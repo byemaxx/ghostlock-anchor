@@ -149,12 +149,27 @@ void prepare_pselect_fdsets(fd_set *in, fd_set *out, fd_set *ex) {
     return;
   }
 
+  int compact = active_offsets && active_offsets->waiter_compact;
+
   int words_per_set = pselect_words_per_set();
   struct pselect_waiter_word {
     int word;
     uint64_t value;
     const char *name;
-  } words[] = {
+  };
+
+  struct pselect_waiter_word words_compact[] = {
+    {2, 0, "tree_left"},
+    {3, 0, "pi_parent"},
+    {4, 0, "pi_right"},
+    {5, 0, "pi_left"},
+    {6, pselect_custom_write_enabled() ? fake_task : text_addr(INIT_TASK), "task"},
+    {7, fake_lock, "lock"},
+    {8, 0, "prio"},
+    {9, 0, "deadline"},
+  };
+
+  struct pselect_waiter_word words[] = {
     {2, 0, "tree_pc"},
     {3, 0, "tree_right"},
     {4, 0, "tree_left"},
@@ -170,8 +185,14 @@ void prepare_pselect_fdsets(fd_set *in, fd_set *out, fd_set *ex) {
     {13, fake_lock, "lock"},
     {14, 3, "wake_state"},
   };
-  for (size_t i = 0; i < sizeof(words) / sizeof(words[0]); i++) {
-    struct pselect_waiter_word *w = &words[i];
+
+  struct pselect_waiter_word *active_words = compact ? words_compact : words;
+  size_t active_count = compact
+      ? sizeof(words_compact) / sizeof(words_compact[0])
+      : sizeof(words) / sizeof(words[0]);
+
+  for (size_t i = 0; i < active_count; i++) {
+    struct pselect_waiter_word *w = &active_words[i];
     pselect_put_waiter_word(
         in, out, ex, words_per_set, w->word, w->value, w->name);
   }

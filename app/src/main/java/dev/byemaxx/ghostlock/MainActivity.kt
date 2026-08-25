@@ -446,7 +446,7 @@ private fun DevSettingsDialog(
                     DevSwitchRow(
                         checked = snapshot.loadPolicy,
                         onCheckedChange = onToggleLoadPolicy,
-                        title = "Load SELinux policy"
+                        title = "Fix SELinux policy"
                     )
                     DevSwitchRow(
                         checked = snapshot.autoDisableUsbDebugging,

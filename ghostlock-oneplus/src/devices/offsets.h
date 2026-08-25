@@ -27,6 +27,8 @@ struct kernel_offsets {
   uint32_t task_pid, task_tgid, task_real_parent, task_atomic_flags;
   uint32_t task_real_cred, task_cred, task_comm, task_tasks, task_seccomp;
   uint32_t mm_owner;
+  uint32_t waiter_compact;
+  uint64_t kimage_text_base;
 };
 
 #define OFFSETS_ENTRY(uname, ...) { .uname_r = uname, __VA_ARGS__ }
@@ -49,6 +51,15 @@ struct kernel_offsets {
   .task_comm=0x830, .task_tasks=0x550, .task_seccomp=0x8E8, \
   .mm_owner=0x2B0
 
+#define STRUCT_OFFSETS_5_10 \
+  .task_prio=0x84, .task_normal_prio=0x8C, .task_sched_task_group=0x310, \
+  .task_pi_lock=0x86C, .task_pi_waiters=0x880, \
+  .task_pi_top_task=0x890, .task_pi_blocked_on=0x898, \
+  .task_pid=0x5C8, .task_tgid=0x5CC, .task_real_parent=0x5D8, \
+  .task_atomic_flags=0x590, .task_real_cred=0x778, .task_cred=0x780, \
+  .task_comm=0x790, .task_tasks=0x4C8, .task_seccomp=0x848, \
+  .mm_owner=0x348, .waiter_compact=1
+
 /* 6.1 GKI layout from the Houji BTF extraction. */
 #define STRUCT_OFFSETS_6_1 \
   .task_prio=0x84, .task_normal_prio=0x8C, .task_sched_task_group=0x348, \
@@ -59,6 +70,16 @@ struct kernel_offsets {
   .task_comm=0x848, .task_tasks=0x550, .task_seccomp=0x900, \
   .mm_owner=0x2A0
 
+/* 6.1 vivo layout */
+#define STRUCT_OFFSETS_6_1_VIVO \
+  .task_prio=0x84, .task_normal_prio=0x8C, .task_sched_task_group=0x340, \
+  .task_pi_lock=0x924, .task_pi_waiters=0x938, \
+  .task_pi_top_task=0x948, .task_pi_blocked_on=0x950, \
+  .task_pid=0x6D8, .task_tgid=0x6DC, .task_real_parent=0x688, \
+  .task_atomic_flags=0x638, .task_real_cred=0x830, .task_cred=0x838, \
+  .task_comm=0x848, .task_tasks=0x678, .task_seccomp=0xAA0, \
+  .mm_owner=0x298, .waiter_compact=1
+
 static const struct kernel_offsets known_offsets[] = {
   /* Add new devices by creating src/devices/<name>/offsets.h */
 #include "ace6t/offsets.h"
@@ -67,6 +88,9 @@ static const struct kernel_offsets known_offsets[] = {
 #include "findx9ultra/offsets.h"
 #include "houji/offsets.h"
 #include "pudding/offsets.h"
+#include "pad4pro/offsets.h"
+#include "cph2521/offsets.h"
+#include "vivot4/offsets.h"
   { .uname_r = NULL }
 };
 
