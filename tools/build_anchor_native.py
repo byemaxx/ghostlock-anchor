@@ -88,8 +88,9 @@ def main() -> int:
     if not compiler.is_file():
         raise RuntimeError(f"NDK compiler not found: {compiler}")
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    temporary_output = args.output.with_suffix(args.output.suffix + ".tmp")
+    output_path = args.output.resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_output = output_path.with_suffix(output_path.suffix + ".tmp")
     sources = [
         "src/core/main.c",
         "src/core/util.c",
