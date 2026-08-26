@@ -37,7 +37,7 @@ OFFSETS_ENTRY("6.6.89-android15-8-g97a9aaefab9a-ab14519050-4k",  /* CPH2655_16.0
   .off_slide_boot_id=0x02357E98,
   .off_system_unbound_wq=0x020EAE60, .off_call_usermodehelper_exec_work=0x000CFA4C,
 ),
-OFFSETS_ENTRY("6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k",  /* New kernel for op13 */
+OFFSETS_ENTRY("6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k",  /* OP13 16.0.10.501 */
   .kernel_phys_load=0xa8000000, STRUCT_OFFSETS_6_6, .off_init_task=0x0211E280, .off_init_cred=0x02130748, .off_init_uts_ns=0x022A3448,
   .off_empty_zero_page=0x0230F000, .off_root_task_group=0x02317580,
   .off_selinux_enforcing=0x02358EE0, .off_kptr_restrict=0x0211BCF8,
