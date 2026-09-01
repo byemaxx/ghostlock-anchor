@@ -77,11 +77,14 @@ class BootstrapService : Service() {
                     "override=${shiftOverride.ifBlank { "<none>" }} " +
                     "effective=${effectivePselectShift.ifBlank { "<unset>" }}"
             )
-            // Mirror upstream's shell form through ProcessBuilder's environment:
+            // Mirror upstream's shell form through ProcessBuilder's environment,
+            // optionally appending --bootstrap for helpers that require it.
             //   PSELECT_SHIFT=-2 /data/local/tmp/a/e --bootstrap
             // Do not use Toybox env here: Android's randomized app path can contain
             // '=' and Toybox env may mistake that path for another assignment.
-            val nativeCommand = listOf(binary.absolutePath, "--bootstrap")
+            val nativeCommand = mutableListOf(binary.absolutePath).apply {
+                if (controller.bootstrapMode()) add("--bootstrap")
+            }
             controller.appendDiagnostic(
                 "[+] native command: PSELECT_SHIFT=${effectivePselectShift.ifBlank { "<native>" }} " +
                     nativeCommand.joinToString(" ")

@@ -20,11 +20,12 @@ data class BootstrapSnapshot(
     val pselectShiftDefault: String,
     val pselectShiftOverride: String,
     val preEnv: String,
+    val bootstrapMode: Boolean,
     val status: String,
     val log: String,
 ) {
     companion object {
-        fun empty() = BootstrapSnapshot(AdbKeyStatus.MISSING_BOTH, false, false, false, false, false, "", "", "", "Checking…", "")
+        fun empty() = BootstrapSnapshot(AdbKeyStatus.MISSING_BOTH, false, false, false, false, false, "", "", "", true, "Checking…", "")
     }
 }
 
@@ -110,21 +111,21 @@ class BootstrapController(private val context: Context) {
     }.getOrDefault(false)
 
     fun setAutoDisableUsbDebugging(enabled: Boolean) {
-        writeOptions(enabled, configuredForceUmh(), loadPolicy(), pselectShiftOverride(), preEnv())
+        writeOptions(enabled, configuredForceUmh(), loadPolicy(), pselectShiftOverride(), preEnv(), bootstrapMode())
     }
 
     fun setForceUmh(enabled: Boolean) {
-        writeOptions(autoDisableUsbDebugging(), enabled, loadPolicy(), pselectShiftOverride(), preEnv())
+        writeOptions(autoDisableUsbDebugging(), enabled, loadPolicy(), pselectShiftOverride(), preEnv(), bootstrapMode())
     }
 
     fun setLoadPolicy(enabled: Boolean) {
-        writeOptions(autoDisableUsbDebugging(), configuredForceUmh(), enabled, pselectShiftOverride(), preEnv())
+        writeOptions(autoDisableUsbDebugging(), configuredForceUmh(), enabled, pselectShiftOverride(), preEnv(), bootstrapMode())
     }
 
-    fun setDevSettings(pselectShiftOverride: String, preEnv: String) {
+    fun setDevSettings(pselectShiftOverride: String, preEnv: String, bootstrapMode: Boolean) {
         writeOptions(
             autoDisableUsbDebugging(), configuredForceUmh(), loadPolicy(),
-            pselectShiftOverride, preEnv
+            pselectShiftOverride, preEnv, bootstrapMode
         )
     }
 
@@ -135,6 +136,8 @@ class BootstrapController(private val context: Context) {
     fun pselectShiftOverride(): String = readTextOption("pselect_shift_override")
 
     fun preEnv(): String = readTextOption("pre_env")
+
+    fun bootstrapMode(): Boolean = readOption("bootstrap_mode", default = true)
 
     fun basicInfo(): BootstrapBasicInfo {
         val tcpAdb = runCatching {
@@ -178,6 +181,7 @@ class BootstrapController(private val context: Context) {
         loadPolicy: Boolean,
         pselectShiftOverride: String,
         preEnv: String,
+        bootstrapMode: Boolean,
     ) {
         optionsFile.parentFile?.mkdirs()
         optionsFile.writeText(
@@ -185,7 +189,8 @@ class BootstrapController(private val context: Context) {
                 "force_umh=${if (forceUmh) 1 else 0}\n" +
                 "load_policy=${if (loadPolicy) 1 else 0}\n" +
                 "pselect_shift_override=${optionValue(pselectShiftOverride)}\n" +
-                "pre_env=${optionValue(preEnv)}\n"
+                "pre_env=${optionValue(preEnv)}\n" +
+                "bootstrap_mode=${if (bootstrapMode) 1 else 0}\n"
         )
     }
 
