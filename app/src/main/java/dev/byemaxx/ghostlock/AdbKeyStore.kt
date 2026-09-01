@@ -14,10 +14,10 @@ import java.security.interfaces.RSAPrivateCrtKey
 enum class AdbKeyPart { PRIVATE, PUBLIC }
 
 enum class AdbKeyStatus(val description: String) {
-    MISSING_BOTH("ADB key pair is being created for this app."),
+    MISSING_BOTH("Import the computer-authorized adbkey and adbkey.pub pair."),
     MISSING_PRIVATE("adbkey.pub is present, but the matching adbkey private key is missing."),
     MISSING_PUBLIC("adbkey is present, but the matching adbkey.pub public key is missing."),
-    READY("Key pair ready and stored in this app's private noBackup directory."),
+    READY("Key pair ready in Anchor's app-private device-protected storage for boot Bootstrap."),
     INVALID("Invalid key file format. Re-import a matching ADB key pair."),
     ;
 
@@ -25,11 +25,14 @@ enum class AdbKeyStatus(val description: String) {
 }
 
 class AdbKeyStore(private val context: Context) {
-    private val directory = File(context.noBackupFilesDir, "adb")
+    private val directContext = context.createDeviceProtectedStorageContext()
+    private val directory = File(directContext.noBackupFilesDir, "adb")
+    private val legacyDirectory = File(context.noBackupFilesDir, "adb")
     val privateKey = File(directory, "adbkey")
     val publicKey = File(directory, "adbkey.pub")
 
     fun status(): AdbKeyStatus {
+        migrateLegacyPairIfNeeded()
         val privatePresent = privateKey.isFile
         val publicPresent = publicKey.isFile
         if (!privatePresent && !publicPresent) return AdbKeyStatus.MISSING_BOTH
@@ -59,7 +62,36 @@ class AdbKeyStore(private val context: Context) {
         destination.setWritable(part == AdbKeyPart.PRIVATE, true)
     }
 
-    /** Creates a device-local key only for a brand-new installation.  Imported
+    /** Existing installs kept this pair in credential-protected storage. Copy
+     * it once into app-private device-protected storage so an explicitly
+     * configured boot campaign can authenticate before user unlock. */
+    private fun migrateLegacyPairIfNeeded() {
+        if (privateKey.exists() || publicKey.exists()) return
+        val legacyPrivate = File(legacyDirectory, "adbkey")
+        val legacyPublic = File(legacyDirectory, "adbkey.pub")
+        if (!validPrivate(legacyPrivate) || !validPublic(legacyPublic)) return
+        runCatching {
+            check(directory.isDirectory || directory.mkdirs()) { "Unable to create device-protected ADB key directory" }
+            copyAtomically(legacyPrivate, privateKey)
+            copyAtomically(legacyPublic, publicKey)
+            privateKey.setReadable(true, true)
+            privateKey.setWritable(true, true)
+            publicKey.setReadable(true, true)
+            publicKey.setWritable(false, true)
+            check(validPrivate(privateKey) && validPublic(publicKey)) { "Migrated ADB key pair did not validate" }
+            legacyPrivate.delete()
+            legacyPublic.delete()
+        }
+    }
+
+    private fun copyAtomically(source: File, destination: File) {
+        val temporary = File(directory, "${destination.name}.migrating")
+        temporary.delete()
+        source.inputStream().use { input -> FileOutputStream(temporary).use(input::copyTo) }
+        check(temporary.renameTo(destination)) { "Unable to install migrated ${destination.name}" }
+    }
+
+    /** Creates a device-local key only for a brand-new installation. Imported
      * or partially present keys are never overwritten. */
     fun ensureGenerated(): Result<Unit> = runCatching {
         if (status() != AdbKeyStatus.MISSING_BOTH) return@runCatching
@@ -144,4 +176,5 @@ class AdbKeyStore(private val context: Context) {
         length < 256 -> byteArrayOf(0x81.toByte(), length.toByte())
         else -> byteArrayOf(0x82.toByte(), (length shr 8).toByte(), length.toByte())
     }
+
 }

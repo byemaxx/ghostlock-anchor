@@ -58,7 +58,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var controller: BootstrapController
     private var snapshot by mutableStateOf(BootstrapSnapshot.empty())
     private var basicInfo by mutableStateOf(BootstrapBasicInfo.loading())
-    private var hasRunInCurrentSession = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -84,6 +83,7 @@ class MainActivity : ComponentActivity() {
                     onStop = ::stopBootstrap,
                     onClearLog = ::clearLog,
                     onShowDetailedDiagnostics = controller::detailedDiagnostics,
+                    onToggleRunOnBoot = ::setRunOnBoot,
                     onToggleAutoDisableUsbDebugging = ::setAutoDisableUsbDebugging,
                     onToggleForceUmh = ::setForceUmh,
                     onToggleLoadPolicy = ::setLoadPolicy,
@@ -101,7 +101,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun refreshUi() {
-        snapshot = controller.snapshot(hasRunInCurrentSession)
+        // A Direct-Boot campaign runs before MainActivity exists. Always show
+        // its retained result when the user opens Anchor after unlocking.
+        snapshot = controller.snapshot(includePreviousResult = true)
     }
 
     private fun startBootstrap() {
@@ -116,7 +118,6 @@ class MainActivity : ComponentActivity() {
             refreshUi()
             return
         }
-        hasRunInCurrentSession = true
         val intent = Intent(this, BootstrapService::class.java).setAction(BootstrapService.ACTION_RUN)
         startForegroundService(intent)
         refreshUi()
@@ -134,6 +135,11 @@ class MainActivity : ComponentActivity() {
 
     private fun clearLog() {
         controller.clearLog()
+        refreshUi()
+    }
+
+    private fun setRunOnBoot(enabled: Boolean) {
+        controller.setRunOnBoot(enabled)
         refreshUi()
     }
 
@@ -170,6 +176,7 @@ private fun BootstrapScreen(
     onStop: () -> Unit,
     onClearLog: () -> Unit,
     onShowDetailedDiagnostics: () -> String,
+    onToggleRunOnBoot: (Boolean) -> Unit,
     onToggleAutoDisableUsbDebugging: (Boolean) -> Unit,
     onToggleForceUmh: (Boolean) -> Unit,
     onToggleLoadPolicy: (Boolean) -> Unit,
@@ -281,18 +288,25 @@ private fun BootstrapScreen(
         }
 
         Card(modifier = Modifier.fillMaxWidth()) {
-            Row(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
-                Button(
-                    onClick = onRun,
-                    enabled = snapshot.keyStatus.ready && !snapshot.running,
-                    modifier = Modifier.weight(1f)
-                ) { Text(if (snapshot.stopping) "Stopping…" else if (snapshot.running) "Bootstrap running…" else "Start Bootstrap") }
-                Spacer(Modifier.width(8.dp))
-                TextButton(
-                    onClick = onStop,
-                    enabled = snapshot.running && !snapshot.stopping,
-                    modifier = Modifier.width(72.dp)
-                ) { Text("Stop") }
+            Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    Button(
+                        onClick = onRun,
+                        enabled = snapshot.keyStatus.ready && !snapshot.running,
+                        modifier = Modifier.weight(1f)
+                    ) { Text(if (snapshot.stopping) "Stopping…" else if (snapshot.running) "Bootstrap running…" else "Start Bootstrap") }
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(
+                        onClick = onStop,
+                        enabled = snapshot.running && !snapshot.stopping,
+                        modifier = Modifier.width(72.dp)
+                    ) { Text("Stop") }
+                }
+                DevSwitchRow(
+                    checked = snapshot.runOnBoot,
+                    onCheckedChange = onToggleRunOnBoot,
+                    title = "Run on boot"
+                )
             }
         }
 
@@ -339,6 +353,12 @@ private fun BootstrapScreen(
                 Text(
                     "Anchor is an Android application implementation for the" +
                         "GhostLock OnePlus project.\n\n" +
+                        "After you import the already authorized adbkey pair, Anchor can retry " +
+                        "GhostLock after reboot. The private key is kept in app-private " +
+                        "device-protected storage so the early boot retry can authenticate. " +
+                        "Root remains temporary for the current boot.\n\n" +
+                        "On OxygenOS, allow Anchor to auto-start and remove battery optimization. " +
+                        "Force-stopped apps do not receive normal boot delivery.\n\n" +
                         "Version ${BuildConfig.VERSION_NAME}\n\n" +
                         "Maintained by byemaxx."
                 )
@@ -458,7 +478,10 @@ private fun DevSettingsDialog(
         },
         confirmButton = {
             TextButton(onClick = {
-                onSave(if (pselectOverrideEnabled) pselectShift else "", preEnv)
+                onSave(
+                    if (pselectOverrideEnabled) pselectShift else "",
+                    preEnv
+                )
             }) { Text("Save") }
         },
         dismissButton = {
