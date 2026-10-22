@@ -6,9 +6,10 @@ import java.io.FileOutputStream
 
 /** App-private diagnostic storage for both the live and completed-run UI. */
 class AppLogStore(context: Context) {
-    private val directory = File(context.noBackupFilesDir, "diagnostics")
+    private val directContext = context.createDeviceProtectedStorageContext()
+    private val directory = File(directContext.noBackupFilesDir, "diagnostics")
     private val activeLog = File(directory, "bootstrap.log")
-    private val resultFile = File(context.filesDir, "bootstrap_result.txt")
+    private val resultFile = File(directContext.filesDir, "bootstrap_result.txt")
 
     @Synchronized
     fun appendDiagnostic(line: String) {
