@@ -152,7 +152,17 @@ static int fix_selinux_policy_c(const char *stage) {
   return 0;
 }
 
+/* Best-effort unload before policy repair; never force module removal. */
+#define UNLOAD_OPLUS_GUARD \
+  "if grep -q \"^oplus_secure_guard_new \" /proc/modules 2>/dev/null; then\n" \
+  "  /system/bin/rmmod oplus_secure_guard_new\n" \
+  "  echo \"oplus_secure_guard_new: rmmod rc=$?\"\n" \
+  "fi\n"
+
 static int run_policy_repair_with_retries(const char *stage) {
+  (void)system(getuid() == 0
+      ? "(\n" UNLOAD_OPLUS_GUARD ") >>" BRIDGE_STATE_DIR "/policy-repair.log 2>&1"
+      : "su -c '(\n" UNLOAD_OPLUS_GUARD ") >>" BRIDGE_STATE_DIR "/policy-repair.log 2>&1'");
   if (getuid() == 0) {
     if (fix_selinux_policy_c(stage) == 0) {
       pr_success("policy repair %s success (c_native)\n", stage);
@@ -842,6 +852,7 @@ static int write_lateload_recovery_script(void) {
     "  printf 'late-load policy repair skipped: immediate repair already succeeded\\n' >>$STATE_DIR/policy-repair.log\n"
     "  POLICY_RC=0\n"
     "elif [ -x \"$POLICY_REPAIR\" ]; then\n"
+    "(\n" UNLOAD_OPLUS_GUARD ") >>$STATE_DIR/policy-repair.log 2>&1\n"
     "  ANCHOR_POLICY_REPAIR_STAGE=late-load \"$POLICY_REPAIR\"\n"
     "  POLICY_RC=$?\n"
     "fi\n"
