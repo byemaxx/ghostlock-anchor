@@ -156,13 +156,15 @@ static int fix_selinux_policy_c(const char *stage) {
 #define UNLOAD_OPLUS_GUARD \
   "if grep -q \"^oplus_secure_guard_new \" /proc/modules 2>/dev/null; then\n" \
   "  /system/bin/rmmod oplus_secure_guard_new\n" \
-  "  echo \"oplus_secure_guard_new: rmmod rc=$?\"\n" \
+  "  echo \"[*] oplus_secure_guard_new: rmmod rc=$?\"\n" \
+  "else\n" \
+  "  echo \"[*] oplus_secure_guard_new: not loaded\"\n" \
   "fi\n"
 
 static int run_policy_repair_with_retries(const char *stage) {
   (void)system(getuid() == 0
-      ? "(\n" UNLOAD_OPLUS_GUARD ") >>" BRIDGE_STATE_DIR "/policy-repair.log 2>&1"
-      : "su -c '(\n" UNLOAD_OPLUS_GUARD ") >>" BRIDGE_STATE_DIR "/policy-repair.log 2>&1'");
+      ? "(\n" UNLOAD_OPLUS_GUARD ") 2>&1 | tee -a " BRIDGE_STATE_DIR "/policy-repair.log"
+      : "su -c '(\n" UNLOAD_OPLUS_GUARD ") 2>&1 | tee -a " BRIDGE_STATE_DIR "/policy-repair.log'");
   if (getuid() == 0) {
     if (fix_selinux_policy_c(stage) == 0) {
       pr_success("policy repair %s success (c_native)\n", stage);
