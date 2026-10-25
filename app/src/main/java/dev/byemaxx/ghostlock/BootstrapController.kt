@@ -14,6 +14,7 @@ data class BootstrapSnapshot(
     val keyStatus: AdbKeyStatus,
     val running: Boolean,
     val stopping: Boolean,
+    val runOnBoot: Boolean,
     val autoDisableUsbDebugging: Boolean,
     val forceUmh: Boolean,
     val loadPolicy: Boolean,
@@ -24,9 +25,13 @@ data class BootstrapSnapshot(
     val log: String,
 ) {
     companion object {
-        fun empty() = BootstrapSnapshot(AdbKeyStatus.MISSING_BOTH, false, false, false, false, false, "", "", "", "Checking…", "")
+        fun empty() = BootstrapSnapshot(
+            AdbKeyStatus.MISSING_BOTH, false, false, true, false, false, false,
+            "", "", "", "Checking…", ""
+        )
     }
 }
+
 
 data class BootstrapBasicInfo(
     val model: String,
@@ -54,7 +59,9 @@ data class BootstrapBasicInfo(
 class BootstrapController(private val context: Context) {
     private val keyStore = AdbKeyStore(context)
     private val logStore = AppLogStore(context)
-    private val optionsFile = File(context.noBackupFilesDir, "options.conf")
+    private val directContext = context.createDeviceProtectedStorageContext()
+    private val optionsFile = File(directContext.noBackupFilesDir, "options.conf")
+    private val legacyOptionsFile = File(context.noBackupFilesDir, "options.conf")
 
     fun snapshot(includePreviousResult: Boolean): BootstrapSnapshot {
         val running = BootstrapService.isRunning()
@@ -71,6 +78,7 @@ class BootstrapController(private val context: Context) {
             keyStatus = keyStore.status(),
             running = running,
             stopping = BootstrapService.isStopRequested(),
+            runOnBoot = runOnBoot(),
             autoDisableUsbDebugging = autoDisableUsbDebugging(),
             forceUmh = forceUmh(),
             loadPolicy = loadPolicy(),
@@ -110,20 +118,27 @@ class BootstrapController(private val context: Context) {
     }.getOrDefault(false)
 
     fun setAutoDisableUsbDebugging(enabled: Boolean) {
-        writeOptions(enabled, configuredForceUmh(), loadPolicy(), pselectShiftOverride(), preEnv())
+        writeOptions(runOnBoot(), enabled, configuredForceUmh(), loadPolicy(), pselectShiftOverride(), preEnv())
     }
 
     fun setForceUmh(enabled: Boolean) {
-        writeOptions(autoDisableUsbDebugging(), enabled, loadPolicy(), pselectShiftOverride(), preEnv())
+        writeOptions(runOnBoot(), autoDisableUsbDebugging(), enabled, loadPolicy(), pselectShiftOverride(), preEnv())
     }
 
     fun setLoadPolicy(enabled: Boolean) {
-        writeOptions(autoDisableUsbDebugging(), configuredForceUmh(), enabled, pselectShiftOverride(), preEnv())
+        writeOptions(runOnBoot(), autoDisableUsbDebugging(), configuredForceUmh(), enabled, pselectShiftOverride(), preEnv())
     }
 
-    fun setDevSettings(pselectShiftOverride: String, preEnv: String) {
+    fun setRunOnBoot(enabled: Boolean) {
+        writeOptions(enabled, autoDisableUsbDebugging(), configuredForceUmh(), loadPolicy(), pselectShiftOverride(), preEnv())
+    }
+
+    fun setDevSettings(
+        pselectShiftOverride: String,
+        preEnv: String,
+    ) {
         writeOptions(
-            autoDisableUsbDebugging(), configuredForceUmh(), loadPolicy(),
+            runOnBoot(), autoDisableUsbDebugging(), configuredForceUmh(), loadPolicy(),
             pselectShiftOverride, preEnv
         )
     }
@@ -131,6 +146,8 @@ class BootstrapController(private val context: Context) {
     fun forceUmh(): Boolean = configuredForceUmh()
 
     fun loadPolicy(): Boolean = readOption("load_policy", default = true)
+
+    fun runOnBoot(): Boolean = readOption("run_on_boot", default = true)
 
     fun pselectShiftOverride(): String = readTextOption("pselect_shift_override")
 
@@ -157,6 +174,7 @@ class BootstrapController(private val context: Context) {
     private fun configuredForceUmh(): Boolean = readOption("force_umh")
 
     private fun readOption(name: String, default: Boolean = false): Boolean = runCatching {
+        migrateLegacyOptionsIfNeeded()
         optionsFile.readText().lineSequence()
             .map { it.trim() }
             .firstOrNull { it.startsWith("$name=") }
@@ -164,24 +182,28 @@ class BootstrapController(private val context: Context) {
             ?: default
     }.getOrDefault(default)
 
-    private fun readTextOption(name: String): String = runCatching {
+    private fun readTextOption(name: String, default: String = ""): String = runCatching {
+        migrateLegacyOptionsIfNeeded()
         optionsFile.readText().lineSequence()
             .map { it.trim() }
             .firstOrNull { it.startsWith("$name=") }
             ?.substringAfter('=')
-            ?: ""
-    }.getOrDefault("")
+            ?: default
+    }.getOrDefault(default)
 
     private fun writeOptions(
+        runOnBoot: Boolean,
         autoDisableUsbDebugging: Boolean,
         forceUmh: Boolean,
         loadPolicy: Boolean,
         pselectShiftOverride: String,
         preEnv: String,
     ) {
+        migrateLegacyOptionsIfNeeded()
         optionsFile.parentFile?.mkdirs()
         optionsFile.writeText(
-            "disable_usb_debugging=${if (autoDisableUsbDebugging) 1 else 0}\n" +
+            "run_on_boot=${if (runOnBoot) 1 else 0}\n" +
+                "disable_usb_debugging=${if (autoDisableUsbDebugging) 1 else 0}\n" +
                 "force_umh=${if (forceUmh) 1 else 0}\n" +
                 "load_policy=${if (loadPolicy) 1 else 0}\n" +
                 "pselect_shift_override=${optionValue(pselectShiftOverride)}\n" +
@@ -190,6 +212,19 @@ class BootstrapController(private val context: Context) {
     }
 
     private fun optionValue(value: String): String = value.replace('\n', ' ').replace('\r', ' ')
+
+    private fun migrateLegacyOptionsIfNeeded() {
+        if (optionsFile.exists() || !legacyOptionsFile.isFile) return
+        runCatching {
+            val contents = legacyOptionsFile.readBytes()
+            optionsFile.parentFile?.mkdirs()
+            val temporary = File(optionsFile.parentFile, "${optionsFile.name}.migrating")
+            temporary.writeBytes(contents)
+            check(temporary.renameTo(optionsFile)) { "Unable to install migrated options" }
+            check(optionsFile.readBytes().contentEquals(contents)) { "Migrated options did not validate" }
+            legacyOptionsFile.delete()
+        }
+    }
 
     private fun completedRunLog(): String {
         val diagnostics = logStore.readCurrentDiagnostics().trimEnd()
