@@ -1,8 +1,8 @@
 # Anchor
 
-Anchor is an Android application implementation for the upstream [JoinChang/ghostlock-oneplus](https://github.com/JoinChang/ghostlock-oneplus/) project. It provides a local USB-debugging workflow of ghostlock.
+Anchor is an Android application implementation for the upstream [JoinChang/ghostlock-oneplus](https://github.com/JoinChang/ghostlock-oneplus/) project. It provides an on-device workflow through local ADB authentication and a separate Bootstrap action.
 
-## Tested Kernel
+## Tested Kernels
 
 | Device | Kernel | Status |
 | --- | --- | --- |
@@ -17,11 +17,11 @@ Anchor is an Android application implementation for the upstream [JoinChang/ghos
 ```
 
 
-## recommended
+## Recommended Manager
 
-Install [ReSukiSU](https://github.com/ReSukiSU/ReSukiSU/actions) on the target device before running Anchor.(KernelSU is also supported)
+Install [ReSukiSU](https://github.com/ReSukiSU/ReSukiSU/actions) on the target device before running Anchor. KernelSU is also supported.
 
-## First Use
+## Setup and Authorization
 
 1. Enable Developer options and USB debugging on the device. For the initial TCP ADB setup, connect the device to an authorized computer and run:
 
@@ -35,19 +35,51 @@ Install [ReSukiSU](https://github.com/ReSukiSU/ReSukiSU/actions) on the target d
 
 The authorization action only authenticates to local ADB. It does not execute a remote command or start Bootstrap. It waits up to two minutes and can be cancelled with **Stop**. Local TCP ADB must already be listening on port `5555`; this action cannot enable it without permission.
 
-### Authorization troubleshooting
+### Optional key import
 
-If the authorization dialog flashes and disappears without USB connected, verify the TCP ADB setup. On the tested device, `persist.adb.tcp.port=5555` with an empty `service.adb.tcp.port` caused the system dialog to dismiss immediately; synchronizing the runtime port to `5555` allowed authorization without USB. Running `adb tcpip 5555` from an authorized computer is the standard setup step. A privileged administrator can inspect and correct the runtime property when necessary.
+Anchor normally uses its automatically generated local key pair. To reuse your own existing ADB identity, import both a matching `adbkey` and `adbkey.pub` through **Menu**. On Windows, computer keys are usually stored in `%USERPROFILE%\.android\`. Import only keys you control. Importing key files does not itself grant system authorization.
 
-The runtime property may reset after reboot. Anchor does not automatically modify privileged system properties, bypass authorization, or guarantee computer-free setup after every reboot. Android may also expire unused ADB grants after seven days; the key files themselves do not expire.
+### TCP ADB configuration
 
-TCP ADB is not limited to localhost just because Anchor connects to `127.0.0.1`. Legacy TCP ADB is unencrypted and may be reachable from the local network; keep authentication enabled and use a trusted network. Import only key pairs you control, if you choose the optional import workflow.
+Anchor connects to `127.0.0.1:5555`. The ADB daemon must listen on the same port. The standard setup command is `adb tcpip 5555`, run from an authorized computer.
 
-## v1.6
+For devices where TCP ADB is configured through system properties:
 
-- Add **Request ADB authorization**, using the existing app-local key generation so fresh installations no longer require importing computer keys.
-- Keep authorization separate from Bootstrap, with visible progress, a two-minute wait and cancellation.
-- Document the TCP ADB prerequisite, USB-dependent dialog dismissal, and reboot limitations.
+| Property | Purpose |
+| --- | --- |
+| `service.adb.tcp.port` | Runtime TCP ADB port; also used by the system authorization dialog on some Android versions. |
+| `persist.adb.tcp.port` | Persistent TCP ADB port configuration, used when no runtime port is set. |
+
+An administrator with an already authorized root ADB shell can configure the runtime port:
+
+```powershell
+adb shell setprop service.adb.tcp.port 5555
+```
+
+If TCP ADB should also be configured for subsequent boots, the persistent setting is optional:
+
+```powershell
+adb shell setprop persist.adb.tcp.port 5555
+```
+
+These commands require privileges; generating a key or requesting authorization does not provide them. Firmware may clear the runtime property after reboot, even when the persistent port remains set. Recheck the configuration after reboot rather than assuming both properties were restored.
+
+### Troubleshooting
+
+- **Authorization dialog disappears immediately without USB:** on some Android versions, the dialog watches USB connection state when the runtime TCP port is unset. A persistent port alone may leave this mismatch. Check that `service.adb.tcp.port` reflects the active TCP port; reconnecting USB can allow authorization while the configuration is corrected.
+- **Connection refused:** confirm that USB debugging is enabled and local TCP ADB is listening on `5555`. The authorization action does not enable TCP ADB or change privileged system properties.
+- **Authorization requested again:** Android can expire unused grants; the default timeout is seven days, but device settings may differ. Reauthorize the existing key instead of importing it again.
+- **Only one key file is present:** import the matching missing file. Anchor preserves existing or partially imported keys instead of replacing them automatically.
+
+The authorization action does not bypass Android consent. Computer-free operation requires TCP ADB to remain available; initial setup or setup after reboot may still require an authorized computer or administrator.
+
+### Network access
+
+TCP ADB is not limited to localhost just because Anchor connects to `127.0.0.1`. Legacy TCP ADB is unencrypted and may be reachable from the local network. Keep authentication enabled and use a trusted network; persistent configuration can keep the network debugging entry point available across boots.
+
+## Release History
+
+Version-specific changes and APK downloads are available on the [Releases page](https://github.com/byemaxx/ghostlock-anchor/releases).
 
 ## Disclaimer
 
