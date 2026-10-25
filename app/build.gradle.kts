@@ -35,8 +35,8 @@ android {
         applicationId = "com.anchor.bootstrap"
         minSdk = 33
         targetSdk = 36
-        versionCode = 8
-        versionName = "1.5"
+        versionCode = 9
+        versionName = "1.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

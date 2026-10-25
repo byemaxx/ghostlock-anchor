@@ -80,7 +80,8 @@ class MainActivity : ComponentActivity() {
                     snapshot = snapshot,
                     basicInfo = basicInfo,
                     onRefresh = ::refreshUi,
-                    onRun = ::startBootstrap,
+                    onRun = { startAction(BootstrapService.ACTION_RUN) },
+                    onAuthorize = { startAction(BootstrapService.ACTION_AUTHORIZE) },
                     onStop = ::stopBootstrap,
                     onClearLog = ::clearLog,
                     onShowDetailedDiagnostics = controller::detailedDiagnostics,
@@ -104,7 +105,7 @@ class MainActivity : ComponentActivity() {
         snapshot = controller.snapshot(hasRunInCurrentSession)
     }
 
-    private fun startBootstrap() {
+    private fun startAction(action: String) {
         if (!controller.isUsbDebuggingEnabled()) {
             controller.appendDiagnostic("[!] USB debugging is disabled; opening Developer options.")
             Toast.makeText(
@@ -117,7 +118,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         hasRunInCurrentSession = true
-        val intent = Intent(this, BootstrapService::class.java).setAction(BootstrapService.ACTION_RUN)
+        val intent = Intent(this, BootstrapService::class.java).setAction(action)
         startForegroundService(intent)
         refreshUi()
     }
@@ -167,6 +168,7 @@ private fun BootstrapScreen(
     basicInfo: BootstrapBasicInfo,
     onRefresh: () -> Unit,
     onRun: () -> Unit,
+    onAuthorize: () -> Unit,
     onStop: () -> Unit,
     onClearLog: () -> Unit,
     onShowDetailedDiagnostics: () -> String,
@@ -237,6 +239,14 @@ private fun BootstrapScreen(
                         }
                     )
                     DropdownMenuItem(
+                        text = { Text("Request ADB authorization") },
+                        enabled = snapshot.keyStatus.ready && !snapshot.running,
+                        onClick = {
+                            menuOpen = false
+                            onAuthorize()
+                        }
+                    )
+                    DropdownMenuItem(
                         text = { Text("Import adbkey") },
                         onClick = {
                             menuOpen = false
@@ -286,7 +296,7 @@ private fun BootstrapScreen(
                     onClick = onRun,
                     enabled = snapshot.keyStatus.ready && !snapshot.running,
                     modifier = Modifier.weight(1f)
-                ) { Text(if (snapshot.stopping) "Stopping…" else if (snapshot.running) "Bootstrap running…" else "Start Bootstrap") }
+                ) { Text(if (snapshot.stopping) "Stopping…" else if (snapshot.running) "Task running…" else "Start Bootstrap") }
                 Spacer(Modifier.width(8.dp))
                 TextButton(
                     onClick = onStop,

@@ -22,11 +22,12 @@ class BootstrapService : Service() {
             requestStop()
             return START_NOT_STICKY
         }
-        if (intent?.action != ACTION_RUN || !running.compareAndSet(false, true)) return START_NOT_STICKY
+        val authorizeOnly = intent?.action == ACTION_AUTHORIZE
+        if ((!authorizeOnly && intent?.action != ACTION_RUN) || !running.compareAndSet(false, true)) return START_NOT_STICKY
         stopRequested.set(false)
-        updateStatus("Starting Bootstrap")
-        startForeground(NOTIFICATION_ID, notification(getString(R.string.bootstrap_running), true))
-        Thread(::runBootstrap, "anchor-bootstrap").start()
+        updateStatus(if (authorizeOnly) "Requesting ADB authorization" else "Starting Bootstrap")
+        startForeground(NOTIFICATION_ID, notification(if (authorizeOnly) "Requesting ADB authorization" else getString(R.string.bootstrap_running), true))
+        Thread({ if (authorizeOnly) runAuthorization() else runBootstrap() }, "anchor-bootstrap").start()
         return START_NOT_STICKY
     }
 
@@ -37,6 +38,40 @@ class BootstrapService : Service() {
         wakeLock = getSystemService(PowerManager::class.java)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "anchor:bootstrap")
             .also { it.acquire(TimeUnit.MINUTES.toMillis(12)) }
+    }
+
+    private fun runAuthorization() {
+        val controller = BootstrapController(applicationContext)
+        val socket = java.net.Socket()
+        activeAuthorization.set(socket)
+        try {
+            controller.clearLog()
+            val keys = AdbKeyStore(applicationContext)
+            keys.ensureGenerated().getOrThrow()
+            check(keys.status().ready) { keys.status().description }
+            check(!stopRequested.get()) { "Authorization stopped" }
+            updateStatus("Requesting ADB authorization")
+            controller.appendDiagnostic("Connecting to local ADB on port 5555…")
+            AdbAuthorization.request(socket, keys.privateKey.readText(), keys.publicKey.readText()) {
+                updateStatus("Confirm ADB authorization on the device")
+                controller.appendDiagnostic("Confirm the system ADB dialog. Waiting up to two minutes…")
+            }
+            updateStatus("ADB authorized")
+            controller.recordResult("ADB authorization succeeded. No remote command was executed.")
+        } catch (error: Exception) {
+            val result = if (stopRequested.get()) "ADB authorization stopped."
+                else "ADB authorization failed: ${error.message}. Check local TCP ADB and system authorization."
+            updateStatus(result)
+            controller.recordResult(result)
+        } finally {
+            runCatching { socket.close() }
+            activeAuthorization.compareAndSet(socket, null)
+            stopRequested.set(false)
+            running.set(false)
+            wakeLock?.let { if (it.isHeld) it.release() }
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
     }
 
     private fun runBootstrap() {
@@ -204,6 +239,7 @@ class BootstrapService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
+        const val ACTION_AUTHORIZE = "com.anchor.bootstrap.action.AUTHORIZE"
         const val ACTION_RUN = "com.anchor.bootstrap.action.RUN"
         const val ACTION_STOP = "com.anchor.bootstrap.action.STOP"
         private const val CHANNEL_ID = "anchor_bootstrap"
@@ -211,6 +247,7 @@ class BootstrapService : Service() {
         private val running = AtomicBoolean(false)
         private val stopRequested = AtomicBoolean(false)
         private val activeProcess = AtomicReference<Process?>(null)
+        private val activeAuthorization = AtomicReference<java.net.Socket?>(null)
         @Volatile private var status = "Not started"
 
         fun isRunning(): Boolean = running.get()
@@ -220,6 +257,7 @@ class BootstrapService : Service() {
             if (!running.get()) return
             stopRequested.set(true)
             activeProcess.get()?.destroyForcibly()
+            runCatching { activeAuthorization.get()?.close() }
         }
         private fun updateStatus(value: String) { status = value }
 
