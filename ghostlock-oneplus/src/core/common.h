@@ -426,7 +426,7 @@ uintptr_t prepare_good_kernel_page(int payload_mode);
 
 void fdset_put_word(fd_set *set, int word, uint64_t value);
 uint64_t fdset_get_word(const fd_set *set, int word);
-void open_selected_fds(
+int open_selected_fds(
     fd_set *in, fd_set *out, fd_set *ex, int read_fd, int write_fd);
 void prepare_pselect_fdsets(fd_set *in, fd_set *out, fd_set *ex);
 void do_pselect_fake_lock_route(void);
@@ -445,7 +445,7 @@ void slide_pselect_put_waiter_word(
     fd_set *in, fd_set *out, fd_set *ex, int words_per_set,
     int waiter_word, uint64_t value, const char *name);
 void prepare_slide_pselect_fdsets(fd_set *in, fd_set *out, fd_set *ex);
-void open_slide_selected_fds(
+int open_slide_selected_fds(
     fd_set *in, fd_set *out, fd_set *ex, int read_fd);
 void slide_pselect_stack_copy(void);
 int hex_value(char c);

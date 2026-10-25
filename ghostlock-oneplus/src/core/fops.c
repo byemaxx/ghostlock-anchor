@@ -113,23 +113,27 @@ static void pselect_put_waiter_word(
   }
 }
 
-void open_selected_fds(
+int open_selected_fds(
     fd_set *in, fd_set *out, fd_set *ex, int read_fd, int write_fd) {
   (void)write_fd;
 
   int high_read = fcntl(read_fd, F_DUPFD, PSELECT_ROUTE_NFDS + 32);
   if (high_read < 0) {
     pr_warning("pselect F_DUPFD read errno=%d\n", errno);
-    return;
+    return 0;
   }
   for (int fd = 0; fd < PSELECT_ROUTE_NFDS; fd++) {
     if (FD_ISSET(fd, in) || FD_ISSET(fd, out) || FD_ISSET(fd, ex)) {
-      dup2(high_read, fd);
+      if (dup2(high_read, fd) < 0) {
+        close(high_read);
+        return 0;
+      }
     }
   }
   close(high_read);
-  dup2(read_fd, PSELECT_ROUTE_NFDS - 1);
+  if (dup2(read_fd, PSELECT_ROUTE_NFDS - 1) < 0) return 0;
   FD_SET(PSELECT_ROUTE_NFDS - 1, ex);
+  return 1;
 }
 
 void prepare_pselect_fdsets(fd_set *in, fd_set *out, fd_set *ex) {
@@ -266,7 +270,15 @@ void do_pselect_fake_lock_route(void) {
             (unsigned long long)fdset_get_word(&ex, 1),
             (unsigned long long)fdset_get_word(&ex, 2),
             (unsigned long long)fdset_get_word(&ex, 3));
-    open_selected_fds(&in, &out, &ex, high_read, pipefd[1]);
+    if (!open_selected_fds(&in, &out, &ex, high_read, pipefd[1])) {
+      cfi_last_step = 36;
+      cfi_last_errno = errno;
+      close(high_read);
+      if (block_fd != pipefd[0]) close(block_fd);
+      close(pipefd[0]);
+      close(pipefd[1]);
+      break;
+    }
 
     atomic_store(&consumer_calls, 0);
     atomic_store(&consumer_success, 0);
@@ -611,13 +623,19 @@ fail:
     }
     cfi_restore_ret = configfs_write_once(
         fd, misc_fops, &original_fops_fail, sizeof(original_fops_fail));
-    if (can_read_back &&
-        cfi_restore_ret == (ssize_t)sizeof(original_fops_fail)) {
-      uint64_t after_fail = 0;
-      if (configfs_read_once(fd, misc_fops, &after_fail, sizeof(after_fail)) ==
-          (ssize_t)sizeof(after_fail)) {
-        fops_after = after_fail;
-      }
+    uint64_t after_fail = 0;
+    ssize_t read_fail = can_read_back
+        ? configfs_read_once(fd, misc_fops, &after_fail, sizeof(after_fail)) : -1;
+    fops_after = after_fail;
+    if (cfi_restore_ret != (ssize_t)sizeof(original_fops_fail) ||
+        read_fail != (ssize_t)sizeof(after_fail) ||
+        after_fail != original_fops_fail) {
+      cfi_last_step = 12;
+      cfi_last_errno = EIO;
+      pr_error("cfi fops restore unverified ret=%zd read=%zd got=%016llx want=%016llx\n",
+               cfi_restore_ret, read_fail,
+               (unsigned long long)after_fail,
+               (unsigned long long)original_fops_fail);
     }
     uint64_t null_owner_fail = 0;
     cfi_owner_ret = configfs_write_once(

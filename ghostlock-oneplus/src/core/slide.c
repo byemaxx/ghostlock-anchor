@@ -132,14 +132,15 @@ void prepare_slide_pselect_fdsets(fd_set *in, fd_set *out, fd_set *ex) {
   }
 }
 
-void open_slide_selected_fds(fd_set *in, fd_set *out, fd_set *ex, int read_fd) {
+int open_slide_selected_fds(fd_set *in, fd_set *out, fd_set *ex, int read_fd) {
   for (int fd = 0; fd < SLIDE_PSELECT_NFDS; fd++) {
     if (FD_ISSET(fd, in) || FD_ISSET(fd, out) || FD_ISSET(fd, ex)) {
-      dup2(read_fd, fd);
+      if (dup2(read_fd, fd) < 0) return 0;
     }
   }
-  dup2(read_fd, SLIDE_PSELECT_NFDS - 1);
+  if (dup2(read_fd, SLIDE_PSELECT_NFDS - 1) < 0) return 0;
   FD_SET(SLIDE_PSELECT_NFDS - 1, ex);
+  return 1;
 }
 
 void slide_pselect_stack_copy(void) {
@@ -172,7 +173,14 @@ void slide_pselect_stack_copy(void) {
   fd_set out;
   fd_set ex;
   prepare_slide_pselect_fdsets(&in, &out, &ex);
-  open_slide_selected_fds(&in, &out, &ex, high_read);
+  if (!open_slide_selected_fds(&in, &out, &ex, high_read)) {
+    pr_error("slide fd setup failed errno=%d\n", errno);
+    close(high_read);
+    if (block_fd != pipefd[0]) close(block_fd);
+    close(pipefd[0]);
+    close(pipefd[1]);
+    return;
+  }
 
   atomic_store(&slide_consume_stop, 0);
   atomic_store(&slide_consume_go, 0);

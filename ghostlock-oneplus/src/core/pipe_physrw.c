@@ -390,7 +390,11 @@ int pipe_phys_read_data(int fd, uintptr_t direct_addr,
   int ok = got == (ssize_t)len;
 
   /* Restore original pipe_buffer */
-  kernel_write_data(fd, pr_buf_addr, &saved, sizeof(saved));
+  if (kernel_write_data(fd, pr_buf_addr, &saved, sizeof(saved)) !=
+      (ssize_t)sizeof(saved)) {
+    pr_error("pipe buffer restore failed addr=%016zx\n", pr_buf_addr);
+    return 0;
+  }
   return ok;
 }
 
@@ -438,7 +442,11 @@ int pipe_phys_write_data(int fd, uintptr_t direct_addr,
   int ok = wrote == (ssize_t)len;
 
   /* Restore original pipe_buffer */
-  kernel_write_data(fd, pr_buf_addr, &saved, sizeof(saved));
+  if (kernel_write_data(fd, pr_buf_addr, &saved, sizeof(saved)) !=
+      (ssize_t)sizeof(saved)) {
+    pr_error("pipe buffer restore failed addr=%016zx\n", pr_buf_addr);
+    return 0;
+  }
   return ok;
 }
 
