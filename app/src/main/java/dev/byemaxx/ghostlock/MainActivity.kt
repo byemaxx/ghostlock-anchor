@@ -175,7 +175,7 @@ private fun BootstrapScreen(
     onToggleAutoDisableUsbDebugging: (Boolean) -> Unit,
     onToggleForceUmh: (Boolean) -> Unit,
     onToggleLoadPolicy: (Boolean) -> Unit,
-    onSaveDevSettings: (String, String) -> Unit,
+    onSaveDevSettings: (String, String, Boolean) -> Unit,
     onShowBasicInfo: () -> Unit,
     onImport: (AdbKeyPart, Uri) -> Unit,
 ) {
@@ -331,8 +331,8 @@ private fun BootstrapScreen(
         DevSettingsDialog(
             snapshot = snapshot,
             onDismiss = { showDevSettings = false },
-            onSave = { pselectShift, preEnv ->
-                onSaveDevSettings(pselectShift, preEnv)
+            onSave = { pselectShift, preEnv, bootstrapMode ->
+                onSaveDevSettings(pselectShift, preEnv, bootstrapMode)
                 showDevSettings = false
             },
             onToggleAutoDisableUsbDebugging = onToggleAutoDisableUsbDebugging,
@@ -389,7 +389,7 @@ private fun BootstrapScreen(
 private fun DevSettingsDialog(
     snapshot: BootstrapSnapshot,
     onDismiss: () -> Unit,
-    onSave: (String, String) -> Unit,
+    onSave: (String, String, Boolean) -> Unit,
     onToggleAutoDisableUsbDebugging: (Boolean) -> Unit,
     onToggleForceUmh: (Boolean) -> Unit,
     onToggleLoadPolicy: (Boolean) -> Unit,
@@ -397,6 +397,7 @@ private fun DevSettingsDialog(
     var pselectShift by remember { mutableStateOf(snapshot.pselectShiftOverride) }
     var pselectOverrideEnabled by remember { mutableStateOf(snapshot.pselectShiftOverride.isNotBlank()) }
     var preEnv by remember { mutableStateOf(snapshot.preEnv) }
+    var bootstrapMode by remember { mutableStateOf(snapshot.bootstrapMode) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -413,6 +414,11 @@ private fun DevSettingsDialog(
                         checked = snapshot.forceUmh,
                         onCheckedChange = onToggleForceUmh,
                         title = "Force UMH mode"
+                    )
+                    DevSwitchRow(
+                        checked = bootstrapMode,
+                        onCheckedChange = { bootstrapMode = it },
+                        title = "Bootstrap mode"
                     )
                     DevSwitchRow(
                         checked = pselectOverrideEnabled,
@@ -468,7 +474,7 @@ private fun DevSettingsDialog(
         },
         confirmButton = {
             TextButton(onClick = {
-                onSave(if (pselectOverrideEnabled) pselectShift else "", preEnv)
+                onSave(if (pselectOverrideEnabled) pselectShift else "", preEnv, bootstrapMode)
             }) { Text("Save") }
         },
         dismissButton = {
