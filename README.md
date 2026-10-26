@@ -43,26 +43,28 @@ Anchor normally uses its automatically generated local key pair. To reuse your o
 
 Anchor connects to `127.0.0.1:5555`. The ADB daemon must listen on the same port. The standard setup command is `adb tcpip 5555`, run from an authorized computer.
 
-For devices where TCP ADB is configured through system properties:
+After a successful Bootstrap with the default policy-loading option, Anchor's one-shot KernelSU late-load script attempts to set both ADB TCP port properties to `5555`. Check them after reboot if TCP ADB does not return:
 
 | Property | Purpose |
 | --- | --- |
 | `service.adb.tcp.port` | Runtime TCP ADB port; also used by the system authorization dialog on some Android versions. |
 | `persist.adb.tcp.port` | Persistent TCP ADB port configuration, used when no runtime port is set. |
 
-An administrator with an already authorized root ADB shell can configure the runtime port:
+With an authorized computer connected, inspect the properties and confirm that port `5555` is listening before changing anything:
 
 ```powershell
-adb shell setprop service.adb.tcp.port 5555
+adb shell getprop service.adb.tcp.port
+adb shell getprop persist.adb.tcp.port
 ```
 
-If TCP ADB should also be configured for subsequent boots, the persistent setting is optional:
+If TCP ADB is unavailable, run `adb tcpip 5555` again. An administrator with a working root shell can also repair the properties when needed:
 
 ```powershell
-adb shell setprop persist.adb.tcp.port 5555
+adb shell su -c "setprop service.adb.tcp.port 5555"
+adb shell su -c "setprop persist.adb.tcp.port 5555"
 ```
 
-These commands require privileges; generating a key or requesting authorization does not provide them. Firmware may clear the runtime property after reboot, even when the persistent port remains set. Recheck the configuration after reboot rather than assuming both properties were restored.
+The property commands require root; generating a key or requesting authorization does not provide it. Firmware may clear the runtime property after reboot, and a persistent property does not guarantee that ADB is listening. Persistent TCP ADB may expose the debugging port to the local network.
 
 ### Troubleshooting
 

@@ -148,7 +148,7 @@ adb push ghostlock /data/local/tmp/a/e && chmod 755 /data/local/tmp/a/e
 
 When using Anchor, import the matching ADB key pair through the app. Do not copy ADB keys to `/data/local/tmp`.
 
-After first successful jailbreak, `persist.adb.tcp.port=5555` is set via `resetprop` — subsequent boots are fully automatic.
+With policy loading enabled, the one-shot KernelSU late-load script attempts to set `persist.adb.tcp.port` and `service.adb.tcp.port` to `5555` via `resetprop`. Verify that TCP ADB is listening after reboot; firmware may clear the runtime setting.
 
 For another TCP port, write it to `/data/local/tmp/a/adb_port`; the bootstrap helper
 reads that value and uses it for both the local connection and the remote handoff.
